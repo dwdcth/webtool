@@ -1,0 +1,7 @@
+.vite/
+build/
+**node_modules/
+**dist/
+*.exe
+frontend/package.json.md5
+frontend/wailsjs/
