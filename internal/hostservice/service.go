@@ -93,6 +93,13 @@ func (s *PluginService) OpenPlugin(id string) (string, error) {
 		return "", fmt.Errorf("插件已停用")
 	}
 	token := s.rtr.TokenFor(id)
+	if mf.DevURL != "" {
+		// 开发模式：直载 vite dev server（不走 token 资产服务）
+		if !strings.HasPrefix(mf.DevURL, "http://") && !strings.HasPrefix(mf.DevURL, "https://") {
+			return "", fmt.Errorf("devUrl 必须是 http(s) 地址")
+		}
+		return mf.DevURL, nil
+	}
 	if mf.Type == manifest.Bundle {
 		return "/p/" + token + "/" + mf.Entry, nil
 	}
@@ -188,6 +195,62 @@ func (s *PluginService) InstallMarketplacePlugin(zipURL, entryID string) (*plugi
 		return nil, fmt.Errorf("安装地址不合法")
 	}
 	return s.mgr.InstallURL(zipURL, "market:"+entryID)
+}
+
+// PluginUpdate 描述一个可更新插件。
+type PluginUpdate struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	CurrentVersion string `json:"currentVersion"`
+	LatestVersion  string `json:"latestVersion"`
+}
+
+// CheckPluginUpdates 拉取市场并与已装版本比对，返回可更新列表。
+func (s *PluginService) CheckPluginUpdates() ([]PluginUpdate, error) {
+	entries, err := marketplace.Fetch(marketplace.DefaultSource)
+	if err != nil {
+		return nil, err
+	}
+	var out []PluginUpdate
+	for _, e := range entries {
+		info, err := s.mgr.Get(e.ID)
+		if err != nil {
+			continue
+		}
+		if info.Source == "capture" || info.Source == "file" {
+			continue // 本地/捕获插件不参与市场更新
+		}
+		if marketplace.VersionLess(info.Version, e.Version) {
+			out = append(out, PluginUpdate{
+				ID: e.ID, Name: info.Name,
+				CurrentVersion: info.Version, LatestVersion: e.Version,
+			})
+		}
+	}
+	return out, nil
+}
+
+// UpdatePlugin 升级插件：保留用户数据（plugin-data 不删），重下安装。
+func (s *PluginService) UpdatePlugin(id string) (*plugin.Info, error) {
+	entries, err := marketplace.Fetch(marketplace.DefaultSource)
+	if err != nil {
+		return nil, err
+	}
+	var entry *marketplace.Entry
+	for i := range entries {
+		if entries[i].ID == id {
+			entry = &entries[i]
+			break
+		}
+	}
+	if entry == nil {
+		return nil, fmt.Errorf("市场中没有插件 %s", id)
+	}
+	if err := s.mgr.Uninstall(id, false); err != nil {
+		return nil, fmt.Errorf("卸载旧版本失败: %w", err)
+	}
+	s.rtr.Revoke(id)
+	return s.mgr.InstallURL(entry.ZipURL, "market:"+id)
 }
 
 // ReportPluginError 接收插件 iframe 的运行时错误（console/rejection），

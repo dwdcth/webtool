@@ -30,8 +30,39 @@ const loading = ref(true)
 const error = ref('')
 const query = ref('')
 const installing = ref<Record<string, boolean>>({})
+const updates = ref<Record<string, string>>({}) // id → 最新版本号
+const checkingUpdates = ref(false)
+const updating = ref<Record<string, boolean>>({})
 
 const installedIds = computed(() => new Set(props.installed.map((p) => p.id)))
+
+// 本地也能比版本（点划数字段），但以服务端 CheckPluginUpdates 为准（过滤 capture/file 来源）
+async function checkUpdates() {
+  checkingUpdates.value = true
+  error.value = ''
+  try {
+    const list = (await PluginService.CheckPluginUpdates()) ?? []
+    const map: Record<string, string> = {}
+    for (const u of list) map[u.id] = u.latestVersion
+    updates.value = map
+  } catch (e) {
+    error.value = `检查更新失败: ${e}`
+  } finally {
+    checkingUpdates.value = false
+  }
+}
+
+async function updatePlugin(e: MarketEntry) {
+  updating.value = { ...updating.value, [e.id]: true }
+  try {
+    const info = await PluginService.UpdatePlugin(e.id)
+    if (info) emit('installed', info)
+  } catch (err) {
+    error.value = `更新 ${e.name} 失败: ${err}`
+  } finally {
+    updating.value = { ...updating.value, [e.id]: false }
+  }
+}
 
 const filtered = computed(() => {
   const q = query.value.trim().toLowerCase()
@@ -55,6 +86,7 @@ function iconOf(e: MarketEntry): { emoji?: string; url?: string; letter?: string
 onMounted(async () => {
   try {
     entries.value = (await PluginService.ListMarketplace()) ?? []
+    checkUpdates()
   } catch (e) {
     error.value = `市场加载失败（需要联网）: ${e}`
   } finally {
@@ -92,6 +124,14 @@ async function install(e: MarketEntry) {
           placeholder="搜索名称 / 关键词…"
           class="ml-auto w-52 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-[13px] text-zinc-800 outline-none placeholder:text-zinc-400 focus:border-sky-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
         />
+        <button
+          class="shrink-0 rounded-lg px-2 py-1.5 text-xs text-zinc-500 transition-colors hover:text-sky-600 dark:text-zinc-400 dark:hover:text-sky-400 disabled:opacity-50"
+          :disabled="checkingUpdates"
+          title="对比市场与已装版本"
+          @click="checkUpdates"
+        >
+          {{ checkingUpdates ? '检查中…' : '⟳ 检查更新' }}
+        </button>
         <button
           class="text-zinc-400 hover:text-zinc-600 dark:text-zinc-500 dark:hover:text-zinc-300"
           @click="emit('close')"
@@ -143,7 +183,16 @@ async function install(e: MarketEntry) {
             </div>
 
             <button
-              v-if="installedIds.has(e.id)"
+              v-if="installedIds.has(e.id) && updates[e.id]"
+              class="shrink-0 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs text-white transition-colors hover:bg-emerald-500 disabled:opacity-50"
+              :disabled="updating[e.id]"
+              :title="`当前 v${props.installed.find((p) => p.id === e.id)?.version} → v${updates[e.id]}`"
+              @click="updatePlugin(e)"
+            >
+              {{ updating[e.id] ? '更新中…' : `更新 → v${updates[e.id]}` }}
+            </button>
+            <button
+              v-else-if="installedIds.has(e.id)"
               disabled
               class="shrink-0 rounded-lg bg-zinc-100 px-3 py-1.5 text-xs text-zinc-400 dark:bg-zinc-800 dark:text-zinc-500"
             >

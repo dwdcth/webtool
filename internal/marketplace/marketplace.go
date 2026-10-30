@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -97,6 +99,35 @@ func Fetch(sourceURL string) ([]Entry, error) {
 		})
 	}
 	return entries, nil
+}
+
+// VersionLess 粗粒度语义版本比较（a < b）：按点分段数字比较，
+// 非数字段按字符串比较。够插件更新检查用。
+func VersionLess(a, b string) bool {
+	pa := strings.Split(a, ".")
+	pb := strings.Split(b, ".")
+	for i := 0; i < len(pa) || i < len(pb); i++ {
+		var sa, sb string
+		if i < len(pa) {
+			sa = pa[i]
+		}
+		if i < len(pb) {
+			sb = pb[i]
+		}
+		na, ea := strconv.Atoi(sa)
+		nb, eb := strconv.Atoi(sb)
+		switch {
+		case ea == nil && eb == nil:
+			if na != nb {
+				return na < nb
+			}
+		default:
+			if sa != sb {
+				return sa < sb
+			}
+		}
+	}
+	return false
 }
 
 // authorString 兼容 "string" 与 {name: ...} 两种写法。

@@ -4,12 +4,15 @@
 package pluginapi
 
 import (
+	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -92,7 +95,8 @@ var routes = map[string]map[string]handlerFunc{
 		"exists":         notImplemented("node.exists"),
 		"stat":           notImplemented("node.stat"),
 		"mkdir":          notImplemented("node.mkdir"),
-		"spawn":          notImplemented("node.spawn"),
+		// sidecar：执行插件目录内可执行文件（stdin/stdout JSON 协议，unihub 兼容）
+		"spawn": (*API).nodeSpawn,
 	},
 }
 
@@ -574,4 +578,77 @@ func (a *API) nodeWriteFile(pluginID string, args map[string]any) (any, error) {
 
 func nilNode(name string) handlerFunc {
 	return notImplemented(name)
+}
+
+// nodeSpawn 执行插件自带的可执行文件（sidecar）。
+// 约束（unihub 兼容）：command 必须以 "./" 开头且解析后仍在插件目录内；
+// stdin 可写入 input；返回 {stdout, stderr, exitCode}；超时杀死进程。
+func (a *API) nodeSpawn(pluginID string, args map[string]any) (any, error) {
+	if err := a.require(pluginID, "spawn"); err != nil {
+		return nil, err
+	}
+	command := argString(args, "command")
+	if !strings.HasPrefix(command, "./") || strings.Contains(command, "..") {
+		return nil, fmt.Errorf("spawn 的 command 必须以 ./ 开头且不能包含 ..（仅限插件目录内）")
+	}
+	mf, err := a.mgr.Manifest(pluginID)
+	if err != nil || mf == nil {
+		return nil, fmt.Errorf("插件 %s 清单不可用", pluginID)
+	}
+	cmdPath, err := safePluginPath(a.mgr, pluginID, strings.TrimPrefix(command, "./"))
+	if err != nil {
+		return nil, err
+	}
+	if st, err := os.Stat(cmdPath); err != nil || st.IsDir() || st.Mode()&0o111 == 0 {
+		return nil, fmt.Errorf("可执行文件不存在或无执行权限：%s", command)
+	}
+
+	var argv []string
+	if raw, ok := args["args"].([]any); ok {
+		for _, v := range raw {
+			if s, ok := v.(string); ok {
+				argv = append(argv, s)
+			}
+		}
+	}
+	timeoutMs := 30000.0
+	if v, ok := args["timeout"].(float64); ok && v > 0 {
+		timeoutMs = v
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMs*float64(time.Millisecond)))
+	defer cancel()
+	cmd := exec.CommandContext(ctx, cmdPath, argv...) //nolint:gosec // 路径已限插件目录且需 spawn 权限
+	if env, ok := args["env"].(map[string]any); ok {
+		for k, v := range env {
+			if s, ok := v.(string); ok {
+				cmd.Env = append(cmd.Environ(), k+"="+s)
+			}
+		}
+	} else {
+		cmd.Env = os.Environ()
+	}
+	if input := argString(args, "input"); input != "" {
+		cmd.Stdin = strings.NewReader(input)
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	exitCode := 0
+	if err := cmd.Run(); err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			exitCode = ee.ExitCode()
+		} else {
+			return nil, fmt.Errorf("执行失败: %v", err)
+		}
+	}
+	// 超时被杀：ExitCode 为 -1，补记 124（惯例超时码）
+	if ctx.Err() == context.DeadlineExceeded && exitCode < 0 {
+		exitCode = 124
+	}
+	return map[string]any{
+		"stdout":   stdout.String(),
+		"stderr":   stderr.String(),
+		"exitCode": exitCode,
+	}, nil
 }

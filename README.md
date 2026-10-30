@@ -81,5 +81,6 @@ service worker 被中和为透传（防缓存劫持）。**只安装可信来源
 
 - [x] P1 插件底座（清单/安装/token 路由/桥/权限）
 - [x] P2 网页捕获（镜像代理/录制/固化）+ 拦截规则编辑
-- [x] P3 市场页（unihub 默认源一键安装）
-- [ ] P3 余项：插件更新检查、dev 模式（devUrl 直载）、sidecar spawn
+- [x] P3 市场页（unihub 默认源一键安装）+ 更新检查 + dev 模式 + sidecar spawn
+
+内置插件：Heynote（官方 webapp 构建 + 适配补丁），**升级流程见 [docs/heynote-upgrade.md](docs/heynote-upgrade.md)**。

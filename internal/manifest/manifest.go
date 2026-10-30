@@ -73,6 +73,7 @@ type Manifest struct {
 	Type         PluginType        `json:"type"`
 	SourceURL    string            `json:"sourceUrl,omitempty"` // web/link 插件的远程地址
 	Mode         string            `json:"mode,omitempty"`      // web 插件：live|record|offline
+	DevURL       string            `json:"devUrl,omitempty"`    // 开发模式：直载 dev server
 	Sandbox      bool              `json:"sandbox,omitempty"`   // 严格沙箱（默认关闭，兼容 WASM/Worker 插件）
 	Interceptors []intercept.Rule  `json:"interceptors,omitempty"`
 	Dir          string            `json:"-"` // 安装目录（运行时填充）
@@ -108,7 +109,8 @@ type uniHub struct {
 type webtool struct {
 	Type         PluginType       `json:"type"`
 	SourceURL    string           `json:"sourceUrl"`
-	Mode         string           `json:"mode"` // web 插件：live | record | offline
+	Mode         string           `json:"mode"`   // web 插件：live | record | offline
+	DevURL       string           `json:"devUrl"` // 开发模式：直载 vite dev server（http://localhost:5173）
 	Interceptors []intercept.Rule `json:"interceptors"`
 	// Sandbox 开启严格沙箱 iframe（无 allow-same-origin）。
 	// 默认关闭：WASM/Worker 类插件（如 pearocr）在 opaque origin 下
@@ -194,6 +196,7 @@ func Parse(raw []byte, fallbackID, fallbackName string) (*Manifest, error) {
 			}
 			m.SourceURL = pkg.Webtool.SourceURL
 			m.Mode = pkg.Webtool.Mode
+			m.DevURL = pkg.Webtool.DevURL
 			m.Sandbox = pkg.Webtool.Sandbox
 			if len(pkg.Webtool.Interceptors) > 0 {
 				rules, err := intercept.Compile(pkg.Webtool.Interceptors)

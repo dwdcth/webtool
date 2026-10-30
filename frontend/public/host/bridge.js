@@ -128,8 +128,15 @@
       writeFile: function (p, content) { return call('node', 'write-file', { path: p, content: content }); },
     },
     getPluginDir: function () { return call('node', 'get-plugin-dir', {}); },
-    spawn: function () {
-      return Promise.reject(new Error('node.spawn 尚未实现'));
+    // sidecar：执行插件目录内可执行文件（stdin→stdout，需声明 spawn 权限）
+    spawn: function (command, args, opts) {
+      return call('node', 'spawn', {
+        command: command,
+        args: args || [],
+        input: opts && opts.input,
+        timeout: opts && opts.timeout,
+        env: opts && opts.env,
+      });
     },
   };
 
