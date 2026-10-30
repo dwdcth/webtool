@@ -1,42 +1,25 @@
-diff --git a/src/components/App.vue b/src/components/App.vue
-index ef4b5ba..2200c3c 100644
---- a/src/components/App.vue
-+++ b/src/components/App.vue
-@@ -271,7 +271,7 @@
-                         console.error("Failed to save image data")
-                         return
-                     }
--                    const imageUrl = "heynote-file://image/" + encodeURIComponent(filename)
-+                    const imageUrl = (window.__wtResolveImage && filename && filename.startsWith && filename.startsWith("wtimg-") ? window.__wtResolveImage(filename) : "heynote-file://image/" + encodeURIComponent(filename))
-                     setImageFile(editor.view, imageId, imageUrl)
-                 } catch (error) {
-                     console.error("Failed to save drawn image", error)
-diff --git a/src/editor/clipboard/copy-paste.js b/src/editor/clipboard/copy-paste.js
-index fa4f31d..0a13342 100644
---- a/src/editor/clipboard/copy-paste.js
-+++ b/src/editor/clipboard/copy-paste.js
-@@ -198,7 +198,7 @@ export async function pasteCommand(/** @type {EditorView} */view) {
-                     if (filename) {
-                         const image = {
-                             id: crypto.randomUUID(),
--                            file: "heynote-file://image/" + encodeURIComponent(filename),
-+                            file: (window.__wtResolveImage && filename && filename.startsWith && filename.startsWith("wtimg-") ? window.__wtResolveImage(filename) : "heynote-file://image/" + encodeURIComponent(filename)),
-                             width: width,
-                             height: height,
-                         }
-diff --git a/src/editor/clipboard/drag-drop.js b/src/editor/clipboard/drag-drop.js
-index 45c2b3c..4b80a3d 100644
---- a/src/editor/clipboard/drag-drop.js
-+++ b/src/editor/clipboard/drag-drop.js
-@@ -36,7 +36,7 @@ const buildImageTagFromFile = async (file) => {
- 
-     const image = {
-         id: crypto.randomUUID(),
--        file: "heynote-file://image/" + encodeURIComponent(filename),
-+        file: (window.__wtResolveImage && filename && filename.startsWith && filename.startsWith("wtimg-") ? window.__wtResolveImage(filename) : "heynote-file://image/" + encodeURIComponent(filename)),
-         width,
-         height,
-     }
+diff --git a/src/editor/image/widget.js b/src/editor/image/widget.js
+index bd1c061..639358e 100644
+--- a/src/editor/image/widget.js
++++ b/src/editor/image/widget.js
+@@ -108,7 +108,7 @@ export class ImageWidget extends WidgetType {
+         })
+         
+         let img = document.createElement("img")
+-        img.src = this.path
++        img.src = (function () { if (window.__wtResolveImage) {var m = /wtimg-[A-Za-z0-9._-]*/.exec(this.path || "");if (m) { var r = window.__wtResolveImage(m[0]); if (r) return r; } }return this.path; }).call(this)
+         img.style.height = this.getHeight(img)
+         img.style.width = this.getWidth(img)
+         inner.appendChild(img)
+@@ -224,7 +224,7 @@ export class ImageWidget extends WidgetType {
+         //console.log("updateDOM:", dom, this.selected, this.height)
+         dom.className = this.getClassName()
+         const img = dom.querySelector("img")
+-        img.src = this.path
++        img.src = (function () { if (window.__wtResolveImage) {var m = /wtimg-[A-Za-z0-9._-]*/.exec(this.path || "");if (m) { var r = window.__wtResolveImage(m[0]); if (r) return r; } }return this.path; }).call(this)
+         img.style.height = this.getHeight(img)
+         img.style.width = this.getWidth(img)
+         return true
 diff --git a/webapp/bridge.js b/webapp/bridge.js
 index ec73a2f..3c06e0b 100644
 --- a/webapp/bridge.js
