@@ -21,10 +21,10 @@ index bd1c061..639358e 100644
          img.style.width = this.getWidth(img)
          return true
 diff --git a/webapp/bridge.js b/webapp/bridge.js
-index ec73a2f..3c06e0b 100644
+index ec73a2f..41b34be 100644
 --- a/webapp/bridge.js
 +++ b/webapp/bridge.js
-@@ -110,6 +110,89 @@ class IpcRenderer {
+@@ -110,6 +110,219 @@ class IpcRenderer {
      }
  }
  
@@ -37,44 +37,39 @@ index ec73a2f..3c06e0b 100644
 +}, true)
 +
 +let contextMenuEl = null
++let contextMenuCloseNotify = false
 +
-+function closeEditorContextMenu() {
++function closeWtMenu() {
 +    if (contextMenuEl) {
 +        contextMenuEl.remove()
 +        contextMenuEl = null
 +        document.removeEventListener("mousedown", onDocMouseDown, true)
 +        document.removeEventListener("keydown", onDocKeyDown, true)
++        if (contextMenuCloseNotify) {
++            ipcRenderer.send("context-menu-closed")
++        }
++        contextMenuCloseNotify = false
 +    }
 +}
 +
 +function onDocMouseDown(e) {
-+    if (contextMenuEl && !contextMenuEl.contains(e.target)) closeEditorContextMenu()
++    if (contextMenuEl && !contextMenuEl.contains(e.target)) closeWtMenu()
 +}
 +
 +function onDocKeyDown(e) {
-+    if (e.key === "Escape") closeEditorContextMenu()
++    if (e.key === "Escape") closeWtMenu()
 +}
 +
-+function showEditorContextMenu() {
-+    closeEditorContextMenu()
-+    const items = [
-+        { label: "撤销 Undo", accel: "Ctrl+Z", run: () => ipcRenderer.send("undo") },
-+        { label: "重做 Redo", accel: "Ctrl+Shift+Z", run: () => ipcRenderer.send("redo") },
-+        { sep: true },
-+        { label: "剪切 Cut", accel: "Ctrl+X", run: () => document.execCommand("cut") },
-+        { label: "复制 Copy", accel: "Ctrl+C", run: () => document.execCommand("copy") },
-+        { label: "粘贴 Paste", accel: "Ctrl+V", run: () => document.execCommand("paste") },
-+        { sep: true },
-+        { label: "全选 Select All", accel: "Ctrl+A", run: () => ipcRenderer.send("select-all") },
-+        { sep: true },
-+        { label: "删除块 Delete block", accel: "Ctrl+Shift+D", run: () => ipcRenderer.send("delete-block") },
-+        { label: "移动块到其他缓冲区…", accel: "Ctrl+S", run: () => ipcRenderer.send("move-block") },
-+    ]
++// 通用弹出菜单：items = [{label, accel?, checked?, enabled?, sep?, run}]
++// opts = {x, y, notifyClosed}（notifyClosed：关闭时发 context-menu-closed）
++function wtShowMenu(items, opts) {
++    closeWtMenu()
++    const dark = matchMedia("(prefers-color-scheme: dark)").matches
 +    const menu = document.createElement("div")
 +    menu.className = "wt-ctxmenu"
 +    menu.style.cssText =
-+        "position:fixed;z-index:2147483647;min-width:220px;padding:4px 0;" +
-+        "background:" + (matchMedia("(prefers-color-scheme: dark)").matches ? "#2b2d33" : "#ffffff") + ";" +
++        "position:fixed;z-index:2147483647;min-width:220px;max-height:70vh;overflow:auto;padding:4px 0;" +
++        "background:" + (dark ? "#2b2d33" : "#ffffff") + ";" +
 +        "border:1px solid rgba(128,128,128,.35);border-radius:8px;" +
 +        "box-shadow:0 8px 24px rgba(0,0,0,.25);font:12px -apple-system,'Segoe UI',sans-serif;"
 +    for (const it of items) {
@@ -86,35 +81,170 @@ index ec73a2f..3c06e0b 100644
 +        }
 +        const row = document.createElement("div")
 +        row.style.cssText =
-+            "display:flex;justify-content:space-between;gap:24px;padding:5px 12px;cursor:pointer;" +
-+            "color:" + (matchMedia("(prefers-color-scheme: dark)").matches ? "#e6e6e6" : "#222")
-+        row.textContent = it.label
++            "display:flex;align-items:center;justify-content:space-between;gap:24px;padding:5px 12px;" +
++            (it.enabled === false
++                ? "cursor:default;opacity:.4;"
++                : "cursor:pointer;color:" + (dark ? "#e6e6e6" : "#222") + ";")
++        if (it.checked !== undefined) {
++            const box = document.createElement("span")
++            box.style.cssText = "width:14px;flex:none;" + (it.checked ? "" : "color:transparent")
++            box.textContent = "✓"
++            row.appendChild(box)
++        }
++        const label = document.createElement("span")
++        label.style.cssText = "flex:1;white-space:nowrap"
++        label.textContent = (it.checked !== undefined ? "  " : "") + it.label
++        row.appendChild(label)
 +        const accel = document.createElement("span")
 +        accel.style.cssText = "opacity:.55;font-size:11px"
 +        accel.textContent = it.accel || ""
 +        row.appendChild(accel)
-+        row.onmouseenter = () => { row.style.background = "rgba(70,130,220,.18)" }
-+        row.onmouseleave = () => { row.style.background = "transparent" }
-+        row.onmousedown = (e) => { e.preventDefault(); e.stopPropagation() }
-+        row.onclick = () => { closeEditorContextMenu(); try { it.run() } catch (err) { console.error(err) } }
++        if (it.enabled !== false) {
++            row.onmouseenter = () => { row.style.background = "rgba(70,130,220,.18)" }
++            row.onmouseleave = () => { row.style.background = "transparent" }
++            row.onmousedown = (e) => { e.preventDefault(); e.stopPropagation() }
++            row.onclick = () => { closeWtMenu(); try { it.run && it.run() } catch (err) { console.error(err) } }
++        }
 +        menu.appendChild(row)
 +    }
 +    document.body.appendChild(menu)
-+    // 边界修正
 +    const rect = menu.getBoundingClientRect()
-+    const x = Math.min(lastContextMenuX, window.innerWidth - rect.width - 8)
-+    const y = Math.min(lastContextMenuY, window.innerHeight - rect.height - 8)
-+    menu.style.left = Math.max(8, x) + "px"
-+    menu.style.top = Math.max(8, y) + "px"
++    const x = opts && opts.x !== undefined ? opts.x : lastContextMenuX
++    const y = opts && opts.y !== undefined ? opts.y : lastContextMenuY
++    menu.style.left = Math.max(8, Math.min(x, window.innerWidth - rect.width - 8)) + "px"
++    menu.style.top = Math.max(8, Math.min(y, window.innerHeight - rect.height - 8)) + "px"
 +    contextMenuEl = menu
++    contextMenuCloseNotify = !!(opts && opts.notifyClosed)
 +    document.addEventListener("mousedown", onDocMouseDown, true)
 +    document.addEventListener("keydown", onDocKeyDown, true)
++}
++
++function showEditorContextMenu() {
++    wtShowMenu([
++        { label: "Undo", accel: "Ctrl+Z", run: () => ipcRenderer.send("undo") },
++        { label: "Redo", accel: "Ctrl+Shift+Z", run: () => ipcRenderer.send("redo") },
++        { sep: true },
++        { label: "Cut", accel: "Ctrl+X", run: () => document.execCommand("cut") },
++        { label: "Copy", accel: "Ctrl+C", run: () => document.execCommand("copy") },
++        { label: "Paste", accel: "Ctrl+V", run: () => document.execCommand("paste") },
++        { sep: true },
++        { label: "Select All", accel: "Ctrl+A", run: () => ipcRenderer.send("select-all") },
++        { sep: true },
++        { label: "Delete block", accel: "Ctrl+Shift+D", run: () => ipcRenderer.send("delete-block") },
++        { label: "Move block to another buffer…", accel: "Ctrl+S", run: () => ipcRenderer.send("move-block") },
++    ])
++}
++
++function parentDir(p) {
++    const i = String(p || "").lastIndexOf("/")
++    return i > 0 ? String(p).slice(0, i) : ""
++}
++
++function showTabContextMenu(tabPath) {
++    const isScratch = tabPath === "scratch.txt"
++    const items = []
++    if (isScratch) {
++        items.push({ label: "Archive...", run: () => ipcRenderer.send("tab:archiveScratch") })
++    } else {
++        items.push(
++            { label: "Edit Buffer…", run: () => ipcRenderer.send("tab:editBuffer", tabPath) },
++            { label: "Delete Buffer", run: () => ipcRenderer.send("tab:deleteBuffer", tabPath) },
++        )
++    }
++    items.push(
++        { label: "Open Buffer…", run: () => ipcRenderer.send("tab:openNew") },
++        { label: "New Buffer…", run: () => ipcRenderer.send("tab:openNew", parentDir(tabPath)) },
++        { sep: true },
++        { label: "Close Tab", run: () => ipcRenderer.send("tab:close", tabPath) },
++    )
++    wtShowMenu(items, { notifyClosed: true })
++}
++
++function showBufferTreeContextMenu(bufferPath) {
++    const isScratch = bufferPath === "scratch.txt"
++    const dir = parentDir(bufferPath)
++    const items = []
++    if (isScratch) {
++        items.push({ label: "Archive...", run: () => ipcRenderer.send("tab:archiveScratch") })
++    } else {
++        items.push(
++            { label: "Edit Buffer…", run: () => ipcRenderer.send("tab:editBuffer", bufferPath) },
++            { label: "Delete Buffer", run: () => ipcRenderer.send("tab:deleteBuffer", bufferPath) },
++        )
++    }
++    items.push(
++        { sep: true },
++        { label: "New Buffer…", run: () => ipcRenderer.send("tab:openNew", dir) },
++        { label: "New Folder…", run: () => ipcRenderer.send("bufferTree:createFolder", dir) },
++    )
++    wtShowMenu(items, { notifyClosed: true })
++}
++
++function showBufferTreeDirectoryContextMenu(directoryPath) {
++    // 目录为空（无缓冲区、无子目录）才允许删除
++    const dir = directoryPath || ""
++    const prefix = dir ? dir + "/" : ""
++    const hasBuffer = Object.keys(localStorage)
++        .filter((k) => k.startsWith(NOTE_KEY_PREFIX))
++        .some((k) => {
++            const p = k.slice(NOTE_KEY_PREFIX.length)
++            return dir === "" ? !p.includes("/") : p.startsWith(prefix) && !p.slice(prefix.length).includes("/")
++        })
++    const hasSubDir = getStoredDirectories().some((d) => (dir === "" ? true : d.startsWith(prefix)))
++    wtShowMenu([
++        { label: "New Buffer…", run: () => ipcRenderer.send("tab:openNew", dir) },
++        { label: "New Folder…", run: () => ipcRenderer.send("bufferTree:createFolder", dir) },
++        { label: "Delete Folder", enabled: !hasBuffer && !hasSubDir, run: () => ipcRenderer.send("bufferTree:deleteDirectory", dir) },
++    ], { notifyClosed: true })
++}
++
++function showBufferTreeBackgroundContextMenu() {
++    wtShowMenu([
++        { label: "New Buffer…", run: () => ipcRenderer.send("tab:openNew", "") },
++        { label: "New Folder…", run: () => ipcRenderer.send("bufferTree:createFolder", "") },
++    ], { notifyClosed: true })
++}
++
++// 常见拼写检查语言（Chromium spellcheck 支持集的常用子集）
++const WT_SPELLCHECK_LANGS = [
++    ["en-US", "English (US)"], ["en-GB", "English (UK)"], ["de", "Deutsch"], ["fr", "Français"],
++    ["es", "Español"], ["it", "Italiano"], ["pt-BR", "Português"], ["nl", "Nederlands"],
++    ["ru", "Русский"], ["pl", "Polski"], ["sv", "Svenska"], ["da", "Dansk"],
++]
++
++function showSpellcheckingContextMenu() {
++    let selected
++    try { selected = JSON.parse(localStorage.getItem("spellcheckLanguages") || '["en-US"]') } catch (e) { selected = ["en-US"] }
++    const items = WT_SPELLCHECK_LANGS.map(([code, name]) => ({
++        label: name,
++        checked: selected.includes(code),
++        run: () => {
++            const next = selected.includes(code)
++                ? selected.filter((c) => c !== code)
++                : [...selected, code]
++            localStorage.setItem("spellcheckLanguages", JSON.stringify(next))
++            // 尽力而为：主语言告知浏览器拼写词典方向
++            document.documentElement.lang = next[0] || "en"
++        },
++    }))
++    wtShowMenu(items)
++}
++
++function showMainMenu(x, y) {
++    wtShowMenu([
++        { label: "Settings…", accel: "Ctrl+,", run: () => ipcRenderer.send("open-settings") },
++        { sep: true },
++        {
++            label: "About Heynote (web)",
++            run: () => { window.alert("Heynote " + __APP_VERSION__ + " (webapp build, powered by webtool)") },
++        },
++    ], { x, y })
 +}
 +
  const ipcRenderer = new IpcRenderer()
  
  // get initial settings
-@@ -225,6 +308,25 @@ function migrateBufferFileToLibrary() {
+@@ -225,6 +438,25 @@ function migrateBufferFileToLibrary() {
  }
  migrateBufferFileToLibrary()
  
@@ -140,7 +270,7 @@ index ec73a2f..3c06e0b 100644
  const Heynote = {
      platform: platform,
      defaultFontFamily: "Hack", 
-@@ -242,6 +344,30 @@ const Heynote = {
+@@ -242,6 +474,30 @@ const Heynote = {
              localStorage.setItem(noteKey(path), content)
          },
  
@@ -171,12 +301,42 @@ index ec73a2f..3c06e0b 100644
          async create(path, content) {
              localStorage.setItem(noteKey(path), content)
          },
-@@ -347,6 +473,9 @@ const Heynote = {
+@@ -329,6 +585,11 @@ const Heynote = {
+             
+         },
+ 
++        // web 版无物理路径概念（数据在 localStorage），设置里的"选择位置"优雅 no-op
++        async selectLocation() {
++            return null
++        },
++
+         pathSeparator: "/",
+ 
+         setLibraryPathChangeCallback(callback) {
+@@ -347,6 +608,27 @@ const Heynote = {
  
          invoke(event, ...args) {
              switch (event) {
 +                case "showEditorContextMenu":
 +                    showEditorContextMenu()
++                    break;
++                case "showMainMenu":
++                    showMainMenu(args[0], args[1])
++                    break;
++                case "showTabContextMenu":
++                    showTabContextMenu(args[0])
++                    break;
++                case "showBufferTreeContextMenu":
++                    showBufferTreeContextMenu(args[0])
++                    break;
++                case "showBufferTreeDirectoryContextMenu":
++                    showBufferTreeDirectoryContextMenu(args[0])
++                    break;
++                case "showBufferTreeBackgroundContextMenu":
++                    showBufferTreeBackgroundContextMenu()
++                    break;
++                case "showSpellcheckingContextMenu":
++                    showSpellcheckingContextMenu()
 +                    break;
                  case SAVE_TABS_STATE:
                      localStorage.setItem("openTabsState", JSON.stringify(args[0]))
