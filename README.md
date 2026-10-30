@@ -39,11 +39,54 @@ go run -tags gtk3 ./cmd/devserve [端口]     # 与应用同构的浏览器 harn
 ## 数据目录（`~/.config/webtool/`）
 
 ```
-plugins/          已装插件（解压目录，含 package.json）
+plugins/          已装插件本体（解压目录，含 package.json；web 捕获插件的镜像缓存在其 mirror/ 子目录）
 plugins.json      安装注册表
-plugin-data/      各插件持久化 KV（unihub.storage）
+plugin-data/      各插件持久化数据（见下）
 rules.json        全局拦截规则
+downloads/        下载缓存
+logs/             插件错误采集日志（plugin-errors.log）
 ```
+
+## 插件数据存在哪、怎么找、怎么备份
+
+**每个插件的数据都在 `plugin-data/` 下，按插件 id 命名，两种形态：**
+
+| 文件 | 内容 | 谁在用 |
+|---|---|---|
+| `<id>.blob.db` | **SQLite 单文件库**：笔记文本（`wtbuf:` 键）、图片（`wtimg-*`）、元数据（`wtmeta:`）。无 localStorage 配额限制 | Heynote（全部数据）、任何调用 `unihub.storage.setBlob` 的插件 |
+| `<id>.json` | 常规 KV（`unihub.storage.get/set`） | JWT 工具等轻量偏好 |
+
+例如 Heynote 的所有笔记和图片都在：
+
+```
+~/.config/webtool/plugin-data/heynote.blob.db
+```
+
+**查看内容**（sqlite3 或任意 SQLite 工具）：
+
+```bash
+sqlite3 ~/.config/webtool/plugin-data/heynote.blob.db \
+  "SELECT key, length(data) FROM blobs"
+# wtbuf:scratch.txt   359    ← 笔记文本
+# wtimg-mxxx-1.png    17710  ← 粘贴的图片
+# wtmeta:tabs         110    ← 标签页状态
+```
+
+**备份/恢复 = 拷文件**：
+
+```bash
+# 备份（建议先关应用；运行中备份需连 -wal/-shm 一起拷）
+cp ~/.config/webtool/plugin-data/heynote.blob.db ~/backup/
+
+# 恢复：关掉应用，拷回去即可
+```
+
+**升级插件不动数据**：插件本体在 `plugins/`，数据在 `plugin-data/`，两者分离——
+卸载重装/市场更新都会保留数据（仅明确卸载时勾选删除数据才会清掉）。
+
+**浏览器级存储（兜底）**：少数插件直接用 localStorage 时，数据落在 WebKit 的
+网站数据目录 `~/.local/share/webtool/localstorage/`（wails://localhost 源），
+同样拷 `wails_localhost_0.localstorage` 文件即可备份。
 
 ## 插件清单
 
