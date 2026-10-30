@@ -1,0 +1,104 @@
+diff --git a/webapp/bridge.js b/webapp/bridge.js
+index ec73a2f..0914491 100644
+--- a/webapp/bridge.js
++++ b/webapp/bridge.js
+@@ -110,6 +110,89 @@ class IpcRenderer {
+     }
+ }
+ 
++// ===== Web 版编辑器右键菜单（对应桌面版 electron/main/menu.js 的 getEditorContextMenu）=====
++let lastContextMenuX = 0
++let lastContextMenuY = 0
++document.addEventListener("contextmenu", (e) => {
++    lastContextMenuX = e.clientX
++    lastContextMenuY = e.clientY
++}, true)
++
++let contextMenuEl = null
++
++function closeEditorContextMenu() {
++    if (contextMenuEl) {
++        contextMenuEl.remove()
++        contextMenuEl = null
++        document.removeEventListener("mousedown", onDocMouseDown, true)
++        document.removeEventListener("keydown", onDocKeyDown, true)
++    }
++}
++
++function onDocMouseDown(e) {
++    if (contextMenuEl && !contextMenuEl.contains(e.target)) closeEditorContextMenu()
++}
++
++function onDocKeyDown(e) {
++    if (e.key === "Escape") closeEditorContextMenu()
++}
++
++function showEditorContextMenu() {
++    closeEditorContextMenu()
++    const items = [
++        { label: "撤销 Undo", accel: "Ctrl+Z", run: () => ipcRenderer.send("undo") },
++        { label: "重做 Redo", accel: "Ctrl+Shift+Z", run: () => ipcRenderer.send("redo") },
++        { sep: true },
++        { label: "剪切 Cut", accel: "Ctrl+X", run: () => document.execCommand("cut") },
++        { label: "复制 Copy", accel: "Ctrl+C", run: () => document.execCommand("copy") },
++        { label: "粘贴 Paste", accel: "Ctrl+V", run: () => document.execCommand("paste") },
++        { sep: true },
++        { label: "全选 Select All", accel: "Ctrl+A", run: () => ipcRenderer.send("select-all") },
++        { sep: true },
++        { label: "删除块 Delete block", accel: "Ctrl+Shift+D", run: () => ipcRenderer.send("delete-block") },
++        { label: "移动块到其他缓冲区…", accel: "Ctrl+S", run: () => ipcRenderer.send("move-block") },
++    ]
++    const menu = document.createElement("div")
++    menu.className = "wt-ctxmenu"
++    menu.style.cssText =
++        "position:fixed;z-index:2147483647;min-width:220px;padding:4px 0;" +
++        "background:" + (matchMedia("(prefers-color-scheme: dark)").matches ? "#2b2d33" : "#ffffff") + ";" +
++        "border:1px solid rgba(128,128,128,.35);border-radius:8px;" +
++        "box-shadow:0 8px 24px rgba(0,0,0,.25);font:12px -apple-system,'Segoe UI',sans-serif;"
++    for (const it of items) {
++        if (it.sep) {
++            const sep = document.createElement("div")
++            sep.style.cssText = "height:1px;margin:4px 8px;background:rgba(128,128,128,.3)"
++            menu.appendChild(sep)
++            continue
++        }
++        const row = document.createElement("div")
++        row.style.cssText =
++            "display:flex;justify-content:space-between;gap:24px;padding:5px 12px;cursor:pointer;" +
++            "color:" + (matchMedia("(prefers-color-scheme: dark)").matches ? "#e6e6e6" : "#222")
++        row.textContent = it.label
++        const accel = document.createElement("span")
++        accel.style.cssText = "opacity:.55;font-size:11px"
++        accel.textContent = it.accel || ""
++        row.appendChild(accel)
++        row.onmouseenter = () => { row.style.background = "rgba(70,130,220,.18)" }
++        row.onmouseleave = () => { row.style.background = "transparent" }
++        row.onmousedown = (e) => { e.preventDefault(); e.stopPropagation() }
++        row.onclick = () => { closeEditorContextMenu(); try { it.run() } catch (err) { console.error(err) } }
++        menu.appendChild(row)
++    }
++    document.body.appendChild(menu)
++    // 边界修正
++    const rect = menu.getBoundingClientRect()
++    const x = Math.min(lastContextMenuX, window.innerWidth - rect.width - 8)
++    const y = Math.min(lastContextMenuY, window.innerHeight - rect.height - 8)
++    menu.style.left = Math.max(8, x) + "px"
++    menu.style.top = Math.max(8, y) + "px"
++    contextMenuEl = menu
++    document.addEventListener("mousedown", onDocMouseDown, true)
++    document.addEventListener("keydown", onDocKeyDown, true)
++}
++
+ const ipcRenderer = new IpcRenderer()
+ 
+ // get initial settings
+@@ -347,6 +430,9 @@ const Heynote = {
+ 
+         invoke(event, ...args) {
+             switch (event) {
++                case "showEditorContextMenu":
++                    showEditorContextMenu()
++                    break;
+                 case SAVE_TABS_STATE:
+                     localStorage.setItem("openTabsState", JSON.stringify(args[0]))
+                     break;
