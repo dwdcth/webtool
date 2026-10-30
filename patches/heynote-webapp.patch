@@ -21,21 +21,65 @@ index bd1c061..639358e 100644
          img.style.width = this.getWidth(img)
          return true
 diff --git a/src/editor/language-detection/autodetect.js b/src/editor/language-detection/autodetect.js
-index 041d165..d28d023 100644
+index 041d165..447bed3 100644
 --- a/src/editor/language-detection/autodetect.js
 +++ b/src/editor/language-detection/autodetect.js
-@@ -97,6 +97,20 @@ export function languageDetection(path, getEditor) {
+@@ -9,6 +9,41 @@ import { LANGUAGE_CHANGE } from "../annotation";
+ 
+ const GUESSLANG_TO_TOKEN = Object.fromEntries(LANGUAGES.map(l => [l.guesslang,l.token]))
+ 
++// webtool 增强：markdown 信号评分。返回 true 表示应切换到 markdown。
++function wtMarkdownScore(content) {
++    if (!content) return false
++    // 强信号：任一命中即切换
++    const strong = [
++        /(^|\n)\s*[-*+] \S/,            // 无序列表（- x / * x / + x）
++        /(^|\n)\s*\d+\. \S/,           // 有序列表（1. x）
++        /(^|\n)#{1,6} \S/,               // ATX 标题（# 后必须有空格，排除 #include 等）
++        /(^|\n)\s*(```|~~~)/,            // 围栏代码块
++        /(^|\n)\s*(-{3,}|\*{3,}|_{3,})\s*($|\n)/,  // 水平分割线
++        /\|[^\n|]+\|[^\n]*\n\s*\|[-: |]+/,      // 表格（表头+分隔行）
++    ]
++    for (const re of strong) {
++        if (re.test(content)) return true
++    }
++    // 弱信号：累计 2 个切换
++    const weak = [
++        /\*\*[^*\n]+\*\*/,             // 粗体 **x**
++        /(^|\n)\s*> \S/,               // 引用块
++        /\[[^\]\n]+\]\([^)\n]+\)/,   // 链接 [x](y)
++        /!\[[^\]\n]*\]\([^)\n]+\)/,  // 图片 ![alt](y)
++        /(^|\n)\s*\|[^\n|]+\|/,        // 表格行
++        /`[^`\n]+`/,                    // 行内代码
++        /(^|\n)\s*- \[[ xX]\] /,       // todo 勾选项
++    ]
++    let hits = 0
++    for (const re of weak) {
++        if (re.test(content)) {
++            hits++
++            if (hits >= 2) return true
++        }
++    }
++    return false
++}
++
+ function requestIdleCallbackCompat(cb) {
+     if (window.requestIdleCallback) {
+         return window.requestIdleCallback(cb)
+@@ -97,6 +132,22 @@ export function languageDetection(path, getEditor) {
                          }
  
                          const content = update.state.doc.sliceString(block.content.from, block.content.to)
 +
-+                        // webtool 增强：列表前缀快速通道。ML 检测（guesslang）对中文等
-+                        // 非英文短列表识别不出且 content<=8 字符根本不送检，导致输入
-+                        // "- [ ] 待办" 时块长期停留在 text-a，回车不续写、无勾选框。
-+                        // 规则：auto 块首行是列表/todo 前缀时立即切 markdown。
++                        // webtool 增强：markdown 快速通道（确定性规则，替代/先于 ML 检测）。
++                        // ML（guesslang）对中文等非英文 markdown 识别不出或置信度不足，
++                        // 且上游 content<=8 字符根本不送检——散文式 markdown（标题/粗体/
++                        // 链接）长期停留在 text-a。
++                        // 规则：强信号任一命中立即切 markdown；弱信号累计 2 个切换。
++                        // 安全性：ATX 标题要求 "#" 后有空格（排除 #include/#define/#import）；
++                        // 误切换（如 shell 注释）后 ML 仍可纠正（auto 标志保留）。
 +                        if (block.language.auto === true && block.language.name !== "markdown") {
-+                            const firstLine = (content.split("\n")[0] || "")
-+                            if (/^\s*([-*+] |\d+\. )/.test(firstLine) && redoDepth(update.state) === 0) {
++                            if (wtMarkdownScore(content) && redoDepth(update.state) === 0) {
 +                                changeLanguageTo(update.state, editor.view.dispatch, block, "markdown", true)
 +                                delete previousBlockContent[idx]
 +                                return
