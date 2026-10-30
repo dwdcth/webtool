@@ -442,9 +442,13 @@ func (m *Manager) Uninstall(id string, deleteData bool) error {
 		return err
 	}
 	if deleteData {
-		// plugin-data/<id>.json 由 pluginapi 管理，此处按约定路径删除
+		// plugin-data/<id>.{json,blob.db} 由 pluginapi 管理，此处按约定路径删除
 		if dataDir := filepath.Dir(m.pluginsDir); dataDir != "" {
-			_ = os.Remove(filepath.Join(dataDir, "plugin-data", id+".json"))
+			pd := filepath.Join(dataDir, "plugin-data")
+			_ = os.Remove(filepath.Join(pd, id+".json"))
+			for _, suffix := range []string{"", "-wal", "-shm"} {
+				_ = os.Remove(filepath.Join(pd, id+".blob.db"+suffix))
+			}
 		}
 	}
 	return nil

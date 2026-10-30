@@ -27,12 +27,13 @@ const maxHTTPRespBytes = 32 << 20
 type API struct {
 	mgr *plugin.Manager
 
-	mu     sync.Mutex
+	mu    sync.Mutex
 	stores map[string]*store
+	blobs  map[string]*blobStore
 }
 
 func New(mgr *plugin.Manager) *API {
-	return &API{mgr: mgr, stores: map[string]*store{}}
+	return &API{mgr: mgr, stores: map[string]*store{}, blobs: map[string]*blobStore{}}
 }
 
 type handlerFunc func(a *API, pluginID string, args map[string]any) (any, error)
@@ -46,11 +47,14 @@ func notImplemented(name string) handlerFunc {
 
 var routes = map[string]map[string]handlerFunc{
 	"storage": {
-		"get":    (*API).storageGet,
-		"set":    (*API).storageSet,
-		"delete": (*API).storageDelete,
-		"keys":   (*API).storageKeys,
-		"clear":  (*API).storageClear,
+		"get":        (*API).storageGet,
+		"set":        (*API).storageSet,
+		"delete":     (*API).storageDelete,
+		"keys":       (*API).storageKeys,
+		"clear":      (*API).storageClear,
+		"set-blob":   (*API).blobSet,
+		"get-blob":   (*API).blobGet,
+		"blob-keys":  (*API).blobKeys,
 	},
 	"clipboard": {
 		"read-text":  (*API).clipboardReadText,
@@ -200,6 +204,52 @@ func (a *API) storageKeys(pluginID string, _ map[string]any) (any, error) {
 
 func (a *API) storageClear(pluginID string, _ map[string]any) (any, error) {
 	return nil, a.storeFor(pluginID).Clear()
+}
+
+// ---- blob 存储（每插件一个 SQLite：plugin-data/<id>.blob.db）----
+// 供图片等大对象持久化，避开 localStorage 配额；key 约定 "wtimg-*.png" 等。
+
+func (a *API) blobStoreFor(pluginID string) *blobStore {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if s, ok := a.blobs[pluginID]; ok {
+		return s
+	}
+	s, err := openBlobStore(blobDir(a.mgr), pluginID)
+	if err != nil {
+		// 打不开时降级为内存实现（不可持久化，但不致崩）
+		s = &blobStore{db: nil, path: ""}
+	}
+	if a.blobs == nil {
+		a.blobs = map[string]*blobStore{}
+	}
+	a.blobs[pluginID] = s
+	return s
+}
+
+func (a *API) blobSet(pluginID string, args map[string]any) (any, error) {
+	s := a.blobStoreFor(pluginID)
+	if s.db == nil {
+		return nil, fmt.Errorf("blob 存储不可用")
+	}
+	return nil, s.Set(argString(args, "key"), argString(args, "dataUrl"))
+}
+
+func (a *API) blobGet(pluginID string, args map[string]any) (any, error) {
+	s := a.blobStoreFor(pluginID)
+	if s.db == nil {
+		return nil, fmt.Errorf("blob 存储不可用")
+	}
+	v, err := s.Get(argString(args, "key"))
+	return v, err
+}
+
+func (a *API) blobKeys(pluginID string, _ map[string]any) (any, error) {
+	s := a.blobStoreFor(pluginID)
+	if s.db == nil {
+		return []string{}, nil
+	}
+	return s.Keys()
 }
 
 // ---- clipboard ----

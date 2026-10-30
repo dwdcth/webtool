@@ -21,7 +21,7 @@ index bd1c061..639358e 100644
          img.style.width = this.getWidth(img)
          return true
 diff --git a/webapp/bridge.js b/webapp/bridge.js
-index ec73a2f..41b34be 100644
+index ec73a2f..1752378 100644
 --- a/webapp/bridge.js
 +++ b/webapp/bridge.js
 @@ -110,6 +110,219 @@ class IpcRenderer {
@@ -244,15 +244,36 @@ index ec73a2f..41b34be 100644
  const ipcRenderer = new IpcRenderer()
  
  // get initial settings
-@@ -225,6 +438,25 @@ function migrateBufferFileToLibrary() {
+@@ -225,6 +438,46 @@ function migrateBufferFileToLibrary() {
  }
  migrateBufferFileToLibrary()
  
-+// ===== web 版图片存储（saveImage 产出，wtimg-* 文件名 → dataURL）=====
++// ===== web 版图片存储 =====
++// 优先走宿主能力 API（window.unihub，图片落宿主侧 SQLite，无配额限制）；
++// 无宿主环境（纯浏览器）时兜底 localStorage（wt-images，有 5-10MB 配额）。
++// 两种后端都先预载进内存 wtImages，__wtResolveImage 保持同步渲染。
 +let wtImageSeq = 0
 +const wtImages = (() => {
 +    try { return JSON.parse(localStorage.getItem("wt-images") || "{}") } catch (e) { return {} }
 +})()
++
++const wtHostStorage = (typeof window !== "undefined" && window.unihub && window.unihub.storage && window.unihub.storage.setBlob)
++    ? window.unihub.storage
++    : null
++
++function wtPreloadImages() {
++    if (!wtHostStorage) return
++    wtHostStorage.blobKeys().then((keys) => {
++        (keys || []).forEach((k) => {
++            if (!wtImages[k]) {
++                wtHostStorage.getBlob(k).then((dataUrl) => {
++                    if (dataUrl) wtImages[k] = dataUrl
++                }).catch(() => {})
++            }
++        })
++    }).catch(() => {})
++}
++wtPreloadImages()
 +
 +// wtimg-* 文件名 → dataURL（供编辑器 img.src 直接使用；找不到返回 null 走原协议）
 +window.__wtResolveImage = function (filename) {
@@ -270,11 +291,11 @@ index ec73a2f..41b34be 100644
  const Heynote = {
      platform: platform,
      defaultFontFamily: "Hack", 
-@@ -242,6 +474,30 @@ const Heynote = {
+@@ -242,6 +495,34 @@ const Heynote = {
              localStorage.setItem(noteKey(path), content)
          },
  
-+        // ===== web 版图片保存：dataURL 存 localStorage（wt-images），返回稳定文件名 =====
++        // ===== web 版图片保存：优先宿主 SQLite（经 window.unihub），兜底 localStorage =====
 +        async saveImage({data, mime}) {
 +            try {
 +                const arr = data instanceof Uint8Array ? data : new Uint8Array(data)
@@ -286,10 +307,14 @@ index ec73a2f..41b34be 100644
 +                const dataUrl = "data:" + (mime || "image/png") + ";base64," + btoa(bin)
 +                const filename = "wtimg-" + Date.now().toString(36) + "-" + (++wtImageSeq) + ".png"
 +                wtImages[filename] = dataUrl
-+                try {
-+                    localStorage.setItem("wt-images", JSON.stringify(wtImages))
-+                } catch (e) {
-+                    console.warn("wt-images persist failed (quota?):", e)
++                if (wtHostStorage) {
++                    await wtHostStorage.setBlob(filename, dataUrl)
++                } else {
++                    try {
++                        localStorage.setItem("wt-images", JSON.stringify(wtImages))
++                    } catch (e) {
++                        console.warn("wt-images persist failed (quota?):", e)
++                    }
 +                }
 +                return filename
 +            } catch (e) {
@@ -301,7 +326,7 @@ index ec73a2f..41b34be 100644
          async create(path, content) {
              localStorage.setItem(noteKey(path), content)
          },
-@@ -329,6 +585,11 @@ const Heynote = {
+@@ -329,6 +610,11 @@ const Heynote = {
              
          },
  
@@ -313,7 +338,7 @@ index ec73a2f..41b34be 100644
          pathSeparator: "/",
  
          setLibraryPathChangeCallback(callback) {
-@@ -347,6 +608,27 @@ const Heynote = {
+@@ -347,6 +633,27 @@ const Heynote = {
  
          invoke(event, ...args) {
              switch (event) {
