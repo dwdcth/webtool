@@ -20,6 +20,31 @@ index bd1c061..639358e 100644
          img.style.height = this.getHeight(img)
          img.style.width = this.getWidth(img)
          return true
+diff --git a/src/editor/language-detection/autodetect.js b/src/editor/language-detection/autodetect.js
+index 041d165..d28d023 100644
+--- a/src/editor/language-detection/autodetect.js
++++ b/src/editor/language-detection/autodetect.js
+@@ -97,6 +97,20 @@ export function languageDetection(path, getEditor) {
+                         }
+ 
+                         const content = update.state.doc.sliceString(block.content.from, block.content.to)
++
++                        // webtool 增强：列表前缀快速通道。ML 检测（guesslang）对中文等
++                        // 非英文短列表识别不出且 content<=8 字符根本不送检，导致输入
++                        // "- [ ] 待办" 时块长期停留在 text-a，回车不续写、无勾选框。
++                        // 规则：auto 块首行是列表/todo 前缀时立即切 markdown。
++                        if (block.language.auto === true && block.language.name !== "markdown") {
++                            const firstLine = (content.split("\n")[0] || "")
++                            if (/^\s*([-*+] |\d+\. )/.test(firstLine) && redoDepth(update.state) === 0) {
++                                changeLanguageTo(update.state, editor.view.dispatch, block, "markdown", true)
++                                delete previousBlockContent[idx]
++                                return
++                            }
++                        }
++
+                         if (content === "" && redoDepth(update.state) === 0) {
+                             // if content is cleared, set language to default
+                             //const editor = getEditor()
 diff --git a/webapp/bridge.js b/webapp/bridge.js
 index ec73a2f..ee9498c 100644
 --- a/webapp/bridge.js

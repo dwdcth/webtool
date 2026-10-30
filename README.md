@@ -130,6 +130,7 @@ service worker 被中和为透传（防缓存劫持）。**只安装可信来源
 
 ## 深入文档
 
+- [docs/heynote-使用说明.md](docs/heynote-使用说明.md) — 块/快捷键/待办列表空格坑/图片/备份
 - [docs/heynote-upgrade.md](docs/heynote-upgrade.md) — Heynote 上游升级流程/补丁重放/验收清单
 - [docs/wails3存储和剪贴板.md](docs/wails3存储和剪贴板.md) — 存储与剪贴板的调试经验、
   各方案对比（Wails3 内置/WebKitGTK/golang-design/clipboard）、插件接入指南

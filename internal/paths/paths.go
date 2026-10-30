@@ -7,7 +7,11 @@ import (
 )
 
 // DataDir 返回应用数据根目录（Linux: ~/.config/webtool）。
+// 可用 WEBTOOL_DATA_DIR 环境变量覆盖（调试隔离/便携部署）。
 func DataDir() string {
+	if dir := os.Getenv("WEBTOOL_DATA_DIR"); dir != "" {
+		return dir
+	}
 	if dir, err := os.UserConfigDir(); err == nil && dir != "" {
 		return filepath.Join(dir, "webtool")
 	}
