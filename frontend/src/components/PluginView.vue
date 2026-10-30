@@ -1,15 +1,61 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import type { Tab } from '../types'
+import { PluginService } from '../../bindings/webtool/internal/hostservice'
 
 const props = defineProps<{ tab: Tab }>()
 
 const loading = ref(true)
 const failed = ref(false)
 
-function onLoad() {
+// 同源 iframe 加载完成后注入错误拦截，转发到 Go 落盘（WebKitGTK 排障通道）
+function attachErrorForwarder(frame: HTMLIFrameElement, pluginId: string) {
+  try {
+    const w = frame.contentWindow as (Window & typeof globalThis) | null
+    if (!w) return
+    const flag = w as unknown as { __wtErrHook?: boolean }
+    if (flag.__wtErrHook) return
+    flag.__wtErrHook = true
+    const report = (kind: string, args: unknown[]) => {
+      const msg = args
+        .map((a) => {
+          try {
+            return typeof a === 'string' ? a : JSON.stringify(a)
+          } catch {
+            return String(a)
+          }
+        })
+        .join(' ')
+      PluginService.ReportPluginError(pluginId, `[${kind}] ${msg}`).catch(() => {})
+    }
+    const wc = w.console as unknown as Record<'error' | 'warn', (...a: unknown[]) => void>
+    for (const m of ['error', 'warn'] as const) {
+      const orig = wc[m].bind(w.console)
+      wc[m] = (...args: unknown[]) => {
+        report(m, args)
+        orig(...args)
+      }
+    }
+    w.addEventListener('error', (e: Event) => {
+      const err = e as ErrorEvent
+      report('uncaught', [`${err.message} @${(err.filename || '').split('/').pop()}:${err.lineno}`])
+    })
+    w.addEventListener('unhandledrejection', (e: PromiseRejectionEvent) => {
+      const r: unknown = e.reason
+      report(
+        'rejection',
+        [r instanceof Error ? `${r.message} | ${r.stack?.slice(0, 300) ?? ''}` : String(r)],
+      )
+    })
+  } catch {
+    /* 跨源（沙箱模式）时无法注入，忽略 */
+  }
+}
+
+function onLoad(e: Event) {
   loading.value = false
   failed.value = false
+  attachErrorForwarder(e.target as HTMLIFrameElement, props.tab.key)
 }
 
 function onError() {

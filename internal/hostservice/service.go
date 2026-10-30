@@ -6,7 +6,10 @@ package hostservice
 import (
 	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"webtool/internal/intercept"
 	"webtool/internal/manifest"
@@ -185,6 +188,26 @@ func (s *PluginService) InstallMarketplacePlugin(zipURL, entryID string) (*plugi
 		return nil, fmt.Errorf("安装地址不合法")
 	}
 	return s.mgr.InstallURL(zipURL, "market:"+entryID)
+}
+
+// ReportPluginError 接收插件 iframe 的运行时错误（console/rejection），
+// 落盘到 <dataDir>/logs/plugin-errors.log，便于排查 WebKitGTK 环境问题。
+func (s *PluginService) ReportPluginError(pluginID, message string) {
+	logDir := filepath.Join(filepath.Dir(s.rulesPath), "logs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(logDir, "plugin-errors.log"),
+		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	msg := strings.ReplaceAll(message, "\n", " ⏎ ")
+	if len(msg) > 2000 {
+		msg = msg[:2000]
+	}
+	fmt.Fprintf(f, "[%s] %s: %s\n", time.Now().Format("2006-01-02 15:04:05"), pluginID, msg)
 }
 
 // PluginAssetURL 返回插件目录内相对资源的 URL（供图标等使用）。
