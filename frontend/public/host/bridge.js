@@ -62,9 +62,10 @@
       'delete': function (k) { return call('storage', 'delete', { key: k }); },
       keys: function () { return call('storage', 'keys', {}); },
       clear: function () { return call('storage', 'clear', {}); },
-      // 大对象（图片等）存宿主侧 SQLite，无 localStorage 配额限制
+      // 大对象（图片/笔记文本等）存宿主侧 SQLite，无 localStorage 配额限制
       setBlob: function (k, dataUrl) { return call('storage', 'set-blob', { key: k, dataUrl: dataUrl }); },
       getBlob: function (k) { return call('storage', 'get-blob', { key: k }); },
+      delBlob: function (k) { return call('storage', 'del-blob', { key: k }); },
       blobKeys: function () { return call('storage', 'blob-keys', {}); },
     },
     // ---- 剪贴板 ----

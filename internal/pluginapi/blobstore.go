@@ -58,6 +58,13 @@ func (s *blobStore) Get(key string) (string, error) {
 	return data, err
 }
 
+func (s *blobStore) Delete(key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM blobs WHERE key = ?`, key)
+	return err
+}
+
 func (s *blobStore) Keys() ([]string, error) {
 	rows, err := s.db.Query(`SELECT key FROM blobs ORDER BY created_at, key`)
 	if err != nil {

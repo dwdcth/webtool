@@ -54,6 +54,7 @@ var routes = map[string]map[string]handlerFunc{
 		"clear":      (*API).storageClear,
 		"set-blob":   (*API).blobSet,
 		"get-blob":   (*API).blobGet,
+		"del-blob":   (*API).blobDel,
 		"blob-keys":  (*API).blobKeys,
 	},
 	"clipboard": {
@@ -242,6 +243,14 @@ func (a *API) blobGet(pluginID string, args map[string]any) (any, error) {
 	}
 	v, err := s.Get(argString(args, "key"))
 	return v, err
+}
+
+func (a *API) blobDel(pluginID string, args map[string]any) (any, error) {
+	s := a.blobStoreFor(pluginID)
+	if s.db == nil {
+		return nil, fmt.Errorf("blob 存储不可用")
+	}
+	return nil, s.Delete(argString(args, "key"))
 }
 
 func (a *API) blobKeys(pluginID string, _ map[string]any) (any, error) {

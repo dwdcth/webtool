@@ -21,10 +21,10 @@ index bd1c061..639358e 100644
          img.style.width = this.getWidth(img)
          return true
 diff --git a/webapp/bridge.js b/webapp/bridge.js
-index ec73a2f..1752378 100644
+index ec73a2f..ee9498c 100644
 --- a/webapp/bridge.js
 +++ b/webapp/bridge.js
-@@ -110,6 +110,219 @@ class IpcRenderer {
+@@ -110,6 +110,215 @@ class IpcRenderer {
      }
  }
  
@@ -180,17 +180,13 @@ index ec73a2f..1752378 100644
 +    wtShowMenu(items, { notifyClosed: true })
 +}
 +
-+function showBufferTreeDirectoryContextMenu(directoryPath) {
++async function showBufferTreeDirectoryContextMenu(directoryPath) {
 +    // 目录为空（无缓冲区、无子目录）才允许删除
 +    const dir = directoryPath || ""
 +    const prefix = dir ? dir + "/" : ""
-+    const hasBuffer = Object.keys(localStorage)
-+        .filter((k) => k.startsWith(NOTE_KEY_PREFIX))
-+        .some((k) => {
-+            const p = k.slice(NOTE_KEY_PREFIX.length)
-+            return dir === "" ? !p.includes("/") : p.startsWith(prefix) && !p.slice(prefix.length).includes("/")
-+        })
-+    const hasSubDir = getStoredDirectories().some((d) => (dir === "" ? true : d.startsWith(prefix)))
++    const paths = await libKeys()
++    const hasBuffer = paths.some((p) => (dir === "" ? !p.includes("/") : p.startsWith(prefix) && !p.slice(prefix.length).includes("/")))
++    const hasSubDir = (await getStoredDirectories()).some((d) => (dir === "" ? true : d.startsWith(prefix)))
 +    wtShowMenu([
 +        { label: "New Buffer…", run: () => ipcRenderer.send("tab:openNew", dir) },
 +        { label: "New Folder…", run: () => ipcRenderer.send("bufferTree:createFolder", dir) },
@@ -244,7 +240,53 @@ index ec73a2f..1752378 100644
  const ipcRenderer = new IpcRenderer()
  
  // get initial settings
-@@ -225,6 +438,46 @@ function migrateBufferFileToLibrary() {
+@@ -142,28 +351,31 @@ function noteKey(path) {
+     return NOTE_KEY_PREFIX + path
+ }
+ 
+-function getStoredDirectories() {
++let wtDirsCache = null
++
++async function getStoredDirectories() {
++    if (wtDirsCache) return wtDirsCache
++    const raw = await metaGet("dirs")
+     try {
+-        return JSON.parse(localStorage.getItem(DIRECTORY_LIST_KEY) || "[]")
++        wtDirsCache = raw ? JSON.parse(raw) : []
+     } catch {
+-        return []
++        wtDirsCache = []
+     }
++    return wtDirsCache
+ }
+ 
+-function setStoredDirectories(directories) {
+-    localStorage.setItem(DIRECTORY_LIST_KEY, JSON.stringify([...new Set(directories)].sort()))
++async function setStoredDirectories(directories) {
++    wtDirsCache = [...new Set(directories)].sort()
++    await metaSet("dirs", JSON.stringify(wtDirsCache))
+ }
+ 
+-function getDirectoriesFromNotes() {
++async function getDirectoriesFromNotes() {
+     const directories = new Set()
+-    for (let key in localStorage) {
+-        if (key.startsWith(NOTE_KEY_PREFIX)) {
+-            const path = key.slice(NOTE_KEY_PREFIX.length)
+-            const parts = path.split("/")
+-            if (parts.length > 1) {
+-                for (let i = 1; i < parts.length; i++) {
+-                    directories.add(parts.slice(0, i).join("/"))
+-                }
++    for (const path of await libKeys()) {
++        const parts = path.split("/")
++        if (parts.length > 1) {
++            for (let i = 1; i < parts.length; i++) {
++                directories.add(parts.slice(0, i).join("/"))
+             }
+         }
+     }
+@@ -225,6 +437,130 @@ function migrateBufferFileToLibrary() {
  }
  migrateBufferFileToLibrary()
  
@@ -260,6 +302,90 @@ index ec73a2f..1752378 100644
 +const wtHostStorage = (typeof window !== "undefined" && window.unihub && window.unihub.storage && window.unihub.storage.setBlob)
 +    ? window.unihub.storage
 +    : null
++
++// ---- 文本库存储抽象：宿主 SQLite 优先（wtbuf:/wtmeta: 键），localStorage 兜底 ----
++const WTBUF_PREFIX = "wtbuf:"
++const WTMETA_PREFIX = "wtmeta:"
++
++async function libGet(path) {
++    await wtLibReady
++    if (wtHostStorage) {
++        const v = await wtHostStorage.getBlob(WTBUF_PREFIX + path)
++        return (v === "" || v === null || v === undefined) ? null : v
++    }
++    return localStorage.getItem(noteKey(path))
++}
++
++async function libSet(path, content) {
++    await wtLibReady
++    if (wtHostStorage) {
++        return wtHostStorage.setBlob(WTBUF_PREFIX + path, content)
++    }
++    localStorage.setItem(noteKey(path), content)
++}
++
++async function libDel(path) {
++    await wtLibReady
++    if (wtHostStorage) {
++        return wtHostStorage.delBlob(WTBUF_PREFIX + path)
++    }
++    localStorage.removeItem(noteKey(path))
++}
++
++async function libKeys() {
++    await wtLibReady
++    if (wtHostStorage) {
++        const keys = await wtHostStorage.blobKeys()
++        return (keys || []).filter((k) => k.startsWith(WTBUF_PREFIX)).map((k) => k.slice(WTBUF_PREFIX.length))
++    }
++    return Object.keys(localStorage).filter((k) => k.startsWith(NOTE_KEY_PREFIX)).map((k) => k.slice(NOTE_KEY_PREFIX.length))
++}
++
++async function metaGet(name) {
++    await wtLibReady
++    if (wtHostStorage) {
++        const v = await wtHostStorage.getBlob(WTMETA_PREFIX + name)
++        return v ? v : null
++    }
++    return localStorage.getItem("wtmeta-" + name)
++}
++
++async function metaSet(name, value) {
++    await wtLibReady
++    if (wtHostStorage) {
++        return wtHostStorage.setBlob(WTMETA_PREFIX + name, value)
++    }
++    localStorage.setItem("wtmeta-" + name, value)
++}
++
++// 一次性迁移：localStorage 库 → 宿主 SQLite；迁移成功后移除 localStorage 键（单一事实源）
++let wtLibReady = (async function migrateLibraryToHost() {
++    if (!wtHostStorage) return
++    try {
++        const hostKeys = new Set(await wtHostStorage.blobKeys())
++        for (const k of Object.keys(localStorage)) {
++            if (k.startsWith(NOTE_KEY_PREFIX)) {
++                const path = k.slice(NOTE_KEY_PREFIX.length)
++                if (!hostKeys.has(WTBUF_PREFIX + path)) {
++                    await wtHostStorage.setBlob(WTBUF_PREFIX + path, localStorage.getItem(k))
++                }
++                localStorage.removeItem(k)
++            }
++        }
++        const dirsRaw = localStorage.getItem(DIRECTORY_LIST_KEY)
++        if (dirsRaw && !hostKeys.has(WTMETA_PREFIX + "dirs")) {
++            await wtHostStorage.setBlob(WTMETA_PREFIX + "dirs", dirsRaw)
++        }
++        localStorage.removeItem(DIRECTORY_LIST_KEY)
++        const tabsRaw = localStorage.getItem("openTabsState")
++        if (tabsRaw && !hostKeys.has(WTMETA_PREFIX + "tabs")) {
++            await wtHostStorage.setBlob(WTMETA_PREFIX + "tabs", tabsRaw)
++        }
++        localStorage.removeItem("openTabsState")
++    } catch (e) {
++        console.warn("wt library migrate failed:", e)
++    }
++})()
 +
 +function wtPreloadImages() {
 +    if (!wtHostStorage) return
@@ -291,10 +417,22 @@ index ec73a2f..1752378 100644
  const Heynote = {
      platform: platform,
      defaultFontFamily: "Hack", 
-@@ -242,6 +495,34 @@ const Heynote = {
-             localStorage.setItem(noteKey(path), content)
+@@ -232,77 +568,96 @@ const Heynote = {
+ 
+     buffer: {
+         async load(path) {
+-            //console.log("loading", path)
+-            const content = localStorage.getItem(noteKey(path))
++            const content = await libGet(path)
+             return content === null ? '{"formatVersion":"1.0.0","name":"Scratch"}\n∞∞∞text-a;created=' + (new Date()).toISOString() + '\n' : content
          },
  
+         async save(path, content) {
+-            //console.log("saving", path, content)
+-            localStorage.setItem(noteKey(path), content)
++            await libSet(path, content)
++        },
++
 +        // ===== web 版图片保存：优先宿主 SQLite（经 window.unihub），兜底 localStorage =====
 +        async saveImage({data, mime}) {
 +            try {
@@ -321,12 +459,103 @@ index ec73a2f..1752378 100644
 +                console.error("saveImage failed:", e)
 +                return null
 +            }
-+        },
-+
-         async create(path, content) {
-             localStorage.setItem(noteKey(path), content)
          },
-@@ -329,6 +610,11 @@ const Heynote = {
+ 
+         async create(path, content) {
+-            localStorage.setItem(noteKey(path), content)
++            await libSet(path, content)
+         },
+ 
+         async createDirectory(path) {
+             if (!path) {
+                 return
+             }
+-            const dirs = getStoredDirectories()
++            const dirs = await getStoredDirectories()
+             dirs.push(path)
+-            setStoredDirectories(dirs)
++            await setStoredDirectories(dirs)
+         },
+ 
+         async delete(path) {
+-            localStorage.removeItem(noteKey(path))
++            await libDel(path)
+         },
+ 
+         async isDirectoryEmpty(path) {
+             const prefix = path ? path + "/" : ""
+-            const hasBuffer = Object.keys(localStorage).some((key) => {
+-                if (!key.startsWith(NOTE_KEY_PREFIX)) {
+-                    return false
+-                }
+-                const notePath = key.slice(NOTE_KEY_PREFIX.length)
+-                return notePath.startsWith(prefix)
+-            })
+-            const hasSubDirectory = getStoredDirectories().some((directoryPath) => directoryPath.startsWith(prefix))
++            const paths = await libKeys()
++            const hasBuffer = paths.some((notePath) => notePath.startsWith(prefix))
++            const hasSubDirectory = (await getStoredDirectories()).some((directoryPath) => directoryPath.startsWith(prefix))
+             return !hasBuffer && !hasSubDirectory
+         },
+ 
+         async deleteDirectory(path) {
+-            const directories = getStoredDirectories().filter((directoryPath) => directoryPath !== path)
+-            setStoredDirectories(directories)
++            const directories = (await getStoredDirectories()).filter((directoryPath) => directoryPath !== path)
++            await setStoredDirectories(directories)
+             return true
+         },
+ 
+         async move(path, newPath) {
+-            const content = localStorage.getItem(noteKey(path))
+-            localStorage.setItem(noteKey(newPath), content)
+-            localStorage.removeItem(noteKey(path))
++            const content = await libGet(path)
++            await libSet(newPath, content)
++            await libDel(path)
+         },
+ 
+         async saveAndQuit(contents) {
+             for (const [path, content] of contents) {
+-                localStorage.setItem(noteKey(path), content)
++                await libSet(path, content)
+             }
+         },
+ 
+         async exists(path) {
+-            return localStorage.getItem(noteKey(path)) !== null
++            return (await libGet(path)) !== null
+         },
+ 
+         async getList() {
+-            //return {"scratch.txt": {name:"Scratch"}}
++            const paths = await libKeys()
++            const contents = await Promise.all(paths.map((p) => libGet(p)))
+             const notes = {}
+-            for (let [key, content] of Object.entries(localStorage)) {
+-                if (key.startsWith(NOTE_KEY_PREFIX)) {
+-                    const path = key.slice(NOTE_KEY_PREFIX.length)
+-                    notes[path] = getNoteMetadata(content)
+-                }
+-            }
++            paths.forEach((path, i) => {
++                notes[path] = getNoteMetadata(contents[i] || "")
++            })
+             if (notes["scratch.txt"] === undefined) {
+                 notes["scratch.txt"] = {name: "Scratch"}
+             }
+@@ -311,8 +666,8 @@ const Heynote = {
+ 
+         async getDirectoryList() {
+             const directories = new Set([
+-                ...getDirectoriesFromNotes(),
+-                ...getStoredDirectories(),
++                ...(await getDirectoriesFromNotes()),
++                ...(await getStoredDirectories()),
+             ])
+             return [...directories]
+         },
+@@ -329,6 +684,11 @@ const Heynote = {
              
          },
  
@@ -338,9 +567,12 @@ index ec73a2f..1752378 100644
          pathSeparator: "/",
  
          setLibraryPathChangeCallback(callback) {
-@@ -347,6 +633,27 @@ const Heynote = {
+@@ -345,13 +705,34 @@ const Heynote = {
+             ipcRenderer.off(event, callback)
+         },
  
-         invoke(event, ...args) {
+-        invoke(event, ...args) {
++        async invoke(event, ...args) {
              switch (event) {
 +                case "showEditorContextMenu":
 +                    showEditorContextMenu()
@@ -364,5 +596,35 @@ index ec73a2f..1752378 100644
 +                    showSpellcheckingContextMenu()
 +                    break;
                  case SAVE_TABS_STATE:
-                     localStorage.setItem("openTabsState", JSON.stringify(args[0]))
+-                    localStorage.setItem("openTabsState", JSON.stringify(args[0]))
++                    metaSet("tabs", JSON.stringify(args[0]))
                      break;
+                 case LOAD_TABS_STATE:
+-                    const tabsState = localStorage.getItem("openTabsState")
++                    const tabsState = await metaGet("tabs")
+                     if (tabsState) {
+                         return JSON.parse(tabsState)
+                     }
+@@ -441,11 +822,9 @@ function searchLocalLibrary(options) {
+         })
+         return
+     }
+-    for (let [key, content] of Object.entries(localStorage)) {
+-        if (!key.startsWith(NOTE_KEY_PREFIX)) {
+-            continue
+-        }
+-        const buffer = key.slice(NOTE_KEY_PREFIX.length)
++    ;(async () => {
++    for (const buffer of await libKeys()) {
++        const content = (await libGet(buffer)) || ""
+         const lines = content.split(/\r?\n/)
+         lines.forEach((line, index) => {
+             const submatches = []
+@@ -482,6 +861,7 @@ function searchLocalLibrary(options) {
+         })
+     }
+     ipcRenderer.send(LIBRARY_SEARCH_DONE, { searchId: options.searchId })
++    })()
+ }
+ 
+ window.addEventListener("beforeunload", () => ipcRenderer.send(WINDOW_CLOSE_EVENT))
