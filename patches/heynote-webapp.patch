@@ -1,0 +1,200 @@
+diff --git a/src/components/App.vue b/src/components/App.vue
+index ef4b5ba..2200c3c 100644
+--- a/src/components/App.vue
++++ b/src/components/App.vue
+@@ -271,7 +271,7 @@
+                         console.error("Failed to save image data")
+                         return
+                     }
+-                    const imageUrl = "heynote-file://image/" + encodeURIComponent(filename)
++                    const imageUrl = (window.__wtResolveImage && filename && filename.startsWith && filename.startsWith("wtimg-") ? window.__wtResolveImage(filename) : "heynote-file://image/" + encodeURIComponent(filename))
+                     setImageFile(editor.view, imageId, imageUrl)
+                 } catch (error) {
+                     console.error("Failed to save drawn image", error)
+diff --git a/src/editor/clipboard/copy-paste.js b/src/editor/clipboard/copy-paste.js
+index fa4f31d..0a13342 100644
+--- a/src/editor/clipboard/copy-paste.js
++++ b/src/editor/clipboard/copy-paste.js
+@@ -198,7 +198,7 @@ export async function pasteCommand(/** @type {EditorView} */view) {
+                     if (filename) {
+                         const image = {
+                             id: crypto.randomUUID(),
+-                            file: "heynote-file://image/" + encodeURIComponent(filename),
++                            file: (window.__wtResolveImage && filename && filename.startsWith && filename.startsWith("wtimg-") ? window.__wtResolveImage(filename) : "heynote-file://image/" + encodeURIComponent(filename)),
+                             width: width,
+                             height: height,
+                         }
+diff --git a/src/editor/clipboard/drag-drop.js b/src/editor/clipboard/drag-drop.js
+index 45c2b3c..4b80a3d 100644
+--- a/src/editor/clipboard/drag-drop.js
++++ b/src/editor/clipboard/drag-drop.js
+@@ -36,7 +36,7 @@ const buildImageTagFromFile = async (file) => {
+ 
+     const image = {
+         id: crypto.randomUUID(),
+-        file: "heynote-file://image/" + encodeURIComponent(filename),
++        file: (window.__wtResolveImage && filename && filename.startsWith && filename.startsWith("wtimg-") ? window.__wtResolveImage(filename) : "heynote-file://image/" + encodeURIComponent(filename)),
+         width,
+         height,
+     }
+diff --git a/webapp/bridge.js b/webapp/bridge.js
+index ec73a2f..3c06e0b 100644
+--- a/webapp/bridge.js
++++ b/webapp/bridge.js
+@@ -110,6 +110,89 @@ class IpcRenderer {
+     }
+ }
+ 
++// ===== Web 版编辑器右键菜单（对应桌面版 electron/main/menu.js 的 getEditorContextMenu）=====
++let lastContextMenuX = 0
++let lastContextMenuY = 0
++document.addEventListener("contextmenu", (e) => {
++    lastContextMenuX = e.clientX
++    lastContextMenuY = e.clientY
++}, true)
++
++let contextMenuEl = null
++
++function closeEditorContextMenu() {
++    if (contextMenuEl) {
++        contextMenuEl.remove()
++        contextMenuEl = null
++        document.removeEventListener("mousedown", onDocMouseDown, true)
++        document.removeEventListener("keydown", onDocKeyDown, true)
++    }
++}
++
++function onDocMouseDown(e) {
++    if (contextMenuEl && !contextMenuEl.contains(e.target)) closeEditorContextMenu()
++}
++
++function onDocKeyDown(e) {
++    if (e.key === "Escape") closeEditorContextMenu()
++}
++
++function showEditorContextMenu() {
++    closeEditorContextMenu()
++    const items = [
++        { label: "撤销 Undo", accel: "Ctrl+Z", run: () => ipcRenderer.send("undo") },
++        { label: "重做 Redo", accel: "Ctrl+Shift+Z", run: () => ipcRenderer.send("redo") },
++        { sep: true },
++        { label: "剪切 Cut", accel: "Ctrl+X", run: () => document.execCommand("cut") },
++        { label: "复制 Copy", accel: "Ctrl+C", run: () => document.execCommand("copy") },
++        { label: "粘贴 Paste", accel: "Ctrl+V", run: () => document.execCommand("paste") },
++        { sep: true },
++        { label: "全选 Select All", accel: "Ctrl+A", run: () => ipcRenderer.send("select-all") },
++        { sep: true },
++        { label: "删除块 Delete block", accel: "Ctrl+Shift+D", run: () => ipcRenderer.send("delete-block") },
++        { label: "移动块到其他缓冲区…", accel: "Ctrl+S", run: () => ipcRenderer.send("move-block") },
++    ]
++    const menu = document.createElement("div")
++    menu.className = "wt-ctxmenu"
++    menu.style.cssText =
++        "position:fixed;z-index:2147483647;min-width:220px;padding:4px 0;" +
++        "background:" + (matchMedia("(prefers-color-scheme: dark)").matches ? "#2b2d33" : "#ffffff") + ";" +
++        "border:1px solid rgba(128,128,128,.35);border-radius:8px;" +
++        "box-shadow:0 8px 24px rgba(0,0,0,.25);font:12px -apple-system,'Segoe UI',sans-serif;"
++    for (const it of items) {
++        if (it.sep) {
++            const sep = document.createElement("div")
++            sep.style.cssText = "height:1px;margin:4px 8px;background:rgba(128,128,128,.3)"
++            menu.appendChild(sep)
++            continue
++        }
++        const row = document.createElement("div")
++        row.style.cssText =
++            "display:flex;justify-content:space-between;gap:24px;padding:5px 12px;cursor:pointer;" +
++            "color:" + (matchMedia("(prefers-color-scheme: dark)").matches ? "#e6e6e6" : "#222")
++        row.textContent = it.label
++        const accel = document.createElement("span")
++        accel.style.cssText = "opacity:.55;font-size:11px"
++        accel.textContent = it.accel || ""
++        row.appendChild(accel)
++        row.onmouseenter = () => { row.style.background = "rgba(70,130,220,.18)" }
++        row.onmouseleave = () => { row.style.background = "transparent" }
++        row.onmousedown = (e) => { e.preventDefault(); e.stopPropagation() }
++        row.onclick = () => { closeEditorContextMenu(); try { it.run() } catch (err) { console.error(err) } }
++        menu.appendChild(row)
++    }
++    document.body.appendChild(menu)
++    // 边界修正
++    const rect = menu.getBoundingClientRect()
++    const x = Math.min(lastContextMenuX, window.innerWidth - rect.width - 8)
++    const y = Math.min(lastContextMenuY, window.innerHeight - rect.height - 8)
++    menu.style.left = Math.max(8, x) + "px"
++    menu.style.top = Math.max(8, y) + "px"
++    contextMenuEl = menu
++    document.addEventListener("mousedown", onDocMouseDown, true)
++    document.addEventListener("keydown", onDocKeyDown, true)
++}
++
+ const ipcRenderer = new IpcRenderer()
+ 
+ // get initial settings
+@@ -225,6 +308,25 @@ function migrateBufferFileToLibrary() {
+ }
+ migrateBufferFileToLibrary()
+ 
++// ===== web 版图片存储（saveImage 产出，wtimg-* 文件名 → dataURL）=====
++let wtImageSeq = 0
++const wtImages = (() => {
++    try { return JSON.parse(localStorage.getItem("wt-images") || "{}") } catch (e) { return {} }
++})()
++
++// wtimg-* 文件名 → dataURL（供编辑器 img.src 直接使用；找不到返回 null 走原协议）
++window.__wtResolveImage = function (filename) {
++    if (wtImages[filename]) return wtImages[filename]
++    try {
++        const store = JSON.parse(localStorage.getItem("wt-images") || "{}")
++        if (store[filename]) {
++            wtImages[filename] = store[filename]
++            return store[filename]
++        }
++    } catch (e) { /* 忽略 */ }
++    return null
++}
++
+ const Heynote = {
+     platform: platform,
+     defaultFontFamily: "Hack", 
+@@ -242,6 +344,30 @@ const Heynote = {
+             localStorage.setItem(noteKey(path), content)
+         },
+ 
++        // ===== web 版图片保存：dataURL 存 localStorage（wt-images），返回稳定文件名 =====
++        async saveImage({data, mime}) {
++            try {
++                const arr = data instanceof Uint8Array ? data : new Uint8Array(data)
++                let bin = ""
++                const chunk = 0x8000
++                for (let i = 0; i < arr.length; i += chunk) {
++                    bin += String.fromCharCode.apply(null, arr.subarray(i, i + chunk))
++                }
++                const dataUrl = "data:" + (mime || "image/png") + ";base64," + btoa(bin)
++                const filename = "wtimg-" + Date.now().toString(36) + "-" + (++wtImageSeq) + ".png"
++                wtImages[filename] = dataUrl
++                try {
++                    localStorage.setItem("wt-images", JSON.stringify(wtImages))
++                } catch (e) {
++                    console.warn("wt-images persist failed (quota?):", e)
++                }
++                return filename
++            } catch (e) {
++                console.error("saveImage failed:", e)
++                return null
++            }
++        },
++
+         async create(path, content) {
+             localStorage.setItem(noteKey(path), content)
+         },
+@@ -347,6 +473,9 @@ const Heynote = {
+ 
+         invoke(event, ...args) {
+             switch (event) {
++                case "showEditorContextMenu":
++                    showEditorContextMenu()
++                    break;
+                 case SAVE_TABS_STATE:
+                     localStorage.setItem("openTabsState", JSON.stringify(args[0]))
+                     break;

@@ -131,5 +131,67 @@
   window.unihub = unihub;
   window.node = node;
   window.__WEBTOOL_BRIDGE__ = true;
+
+  // ---- navigator.clipboard 兜底 ----
+  // WebKitGTK 等环境无剪贴板授权 UI，read()/readText() 直接 NotAllowedError。
+  // 原生失败时回落到宿主能力 API（文本走 Wails，图片走 wl-paste/xclip），
+  // 返回值对齐 ClipboardItem 形状，插件（如 heynote 粘贴图片）无感。
+  try {
+    if (navigator.clipboard) {
+      var nativeRead = navigator.clipboard.read ? navigator.clipboard.read.bind(navigator.clipboard) : null;
+      var nativeReadText = navigator.clipboard.readText ? navigator.clipboard.readText.bind(navigator.clipboard) : null;
+
+      function dataUrlToBlob(dataUrl) {
+        var parts = dataUrl.split(',');
+        var mime = (parts[0].match(/data:([^;]+)/) || [])[1] || 'application/octet-stream';
+        var bin = atob(parts[1] || '');
+        var arr = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        return new Blob([arr], { type: mime });
+      }
+
+      navigator.clipboard.readText = function () {
+        return nativeReadText().catch(function () {
+          return call('clipboard', 'read-all', {}).then(function (d) { return d.text || ''; });
+        });
+      };
+
+      navigator.clipboard.read = function () {
+        var p = nativeRead ? nativeRead() : Promise.reject(new Error('no native'));
+        return p.catch(function () {
+          return call('clipboard', 'read-all', {}).then(function (d) {
+            var items = [];
+            if (d.dataUrl) {
+              (function (url) {
+                items.push({
+                  types: ['image/png'],
+                  getType: function (t) {
+                    return t === 'image/png'
+                      ? Promise.resolve(dataUrlToBlob(url))
+                      : Promise.reject(new Error('type not found'));
+                  },
+                });
+              })(d.dataUrl);
+            }
+            if (d.text !== null && d.text !== undefined && d.text !== '') {
+              (function (text) {
+                items.push({
+                  types: ['text/plain'],
+                  getType: function (t) {
+                    return t === 'text/plain'
+                      ? Promise.resolve(new Blob([text], { type: 'text/plain' }))
+                      : Promise.reject(new Error('type not found'));
+                  },
+                });
+              })(d.text);
+            }
+            if (!items.length) throw new Error('clipboard empty');
+            return items;
+          });
+        });
+      };
+    }
+  } catch (e) { /* 补丁失败不影响插件本体 */ }
+
   document.dispatchEvent(new CustomEvent('webtool:bridge-ready'));
 })();

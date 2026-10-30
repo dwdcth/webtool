@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"webtool/internal/clipboardutil"
 	"webtool/internal/plugin"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -54,6 +55,9 @@ var routes = map[string]map[string]handlerFunc{
 	"clipboard": {
 		"read-text":  (*API).clipboardReadText,
 		"write-text": (*API).clipboardWriteText,
+		// read-all：文本 + 图片（图片经 wl-paste/xclip 读系统剪贴板）。
+		// 用于插件内 navigator.clipboard.read 失败时的宿主兜底。
+		"read-all": (*API).clipboardReadAll,
 	},
 	"http": {
 		"get":     (*API).httpGet,
@@ -199,27 +203,36 @@ func (a *API) storageClear(pluginID string, _ map[string]any) (any, error) {
 }
 
 // ---- clipboard ----
+// 全部经 clipboardutil（wl-clipboard/xclip/xsel），不依赖 Wails 运行时，
+// harness 等无应用环境同样可用。
 
 func (a *API) clipboardReadText(pluginID string, _ map[string]any) (any, error) {
 	if err := a.require(pluginID, "clipboard"); err != nil {
 		return nil, err
 	}
-	text, ok := application.Get().Clipboard.Text()
-	if !ok {
-		return map[string]any{"text": ""}, nil
-	}
-	return map[string]any{"text": text}, nil
+	return map[string]any{"text": clipboardutil.ReadText()}, nil
 }
 
 func (a *API) clipboardWriteText(pluginID string, args map[string]any) (any, error) {
 	if err := a.require(pluginID, "clipboard"); err != nil {
 		return nil, err
 	}
-	ok := application.Get().Clipboard.SetText(argString(args, "text"))
-	if !ok {
-		return nil, fmt.Errorf("写入剪贴板失败")
+	if !clipboardutil.WriteText(argString(args, "text")) {
+		return nil, fmt.Errorf("写入剪贴板失败（需要 wl-copy 或 xclip）")
 	}
 	return nil, nil
+}
+
+// clipboardReadAll 返回 {text, dataUrl}：文本与图片均来自系统剪贴板
+// （wl-paste/xclip），两者均可为空。用于插件 navigator.clipboard 兜底。
+func (a *API) clipboardReadAll(pluginID string, _ map[string]any) (any, error) {
+	if err := a.require(pluginID, "clipboard"); err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"text":    clipboardutil.ReadText(),
+		"dataUrl": clipboardutil.ReadImagePNG(),
+	}, nil
 }
 
 // ---- http（宿主代理执行，绕 CORS）----
