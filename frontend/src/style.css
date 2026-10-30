@@ -1,34 +1,30 @@
-/* 
+@import "tailwindcss";
+
+/* 类切换式深色模式：<html class="dark"> 时 dark: 变体生效（默认浅色） */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* 细滚动条，贴合浅/深主题 */
 html {
-    background-color: rgba(27, 38, 54, 1);
-    text-align: center;
-    color: white;
+  color-scheme: light;
 }
-
-body {
-    margin: 0;
-    color: white;
-    font-family: "Nunito", -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto",
-    "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
-    sans-serif;
+html.dark {
+  color-scheme: dark;
 }
-
-@font-face {
-    font-family: "Nunito";
-    font-style: normal;
-    font-weight: 400;
-    src: local(""),
-    url("assets/fonts/nunito-v16-latin-regular.woff2") format("woff2");
-} 
-*/
-
-/* #app {
-    height: 100vh;
-    text-align: center;
-} */
-
-/* 设置高度 */
-html,body,#app{
-    height: 100%;
-    width: 100%;
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #c8ccd4 transparent;
+}
+html.dark * {
+  scrollbar-color: #3a3f4a transparent;
+}
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #c8ccd4;
+  border-radius: 3px;
+}
+html.dark *::-webkit-scrollbar-thumb {
+  background: #3a3f4a;
 }

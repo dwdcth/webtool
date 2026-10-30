@@ -1,132 +1,83 @@
 package main
 
 import (
-	"archive/zip"
 	"embed"
-	"fmt"
 	"io/fs"
-	"io/ioutil"
-	"mime"
-	"net/http"
+	"log/slog"
 	"os"
-	"strings"
+	"path/filepath"
 
-	"github.com/wailsapp/wails/v2"
-	"github.com/wailsapp/wails/v2/pkg/options"
+	"webtool/internal/hostservice"
+	"webtool/internal/paths"
+	"webtool/internal/plugin"
+	"webtool/internal/pluginapi"
+	"webtool/internal/router"
+	"webtool/internal/server"
+
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
-//go:embed frontend/dist
+//go:embed all:frontend/dist
 var assets embed.FS
 
-type FileLoader struct {
-	http.Handler
-}
-
-func NewFileLoader() *FileLoader {
-	return &FileLoader{}
-}
-
-type myCloser interface {
-	Close() error
-}
-
-// closeFile is a helper function which streamlines closing
-// with error checking on different file types.
-func closeFile(f myCloser) {
-	err := f.Close()
-	check(err)
-}
-func readAll(file fs.File) []byte {
-	// fc, err := file.Open()
-	// check(err)
-	// defer closeFile(fc)
-
-	content, err := ioutil.ReadAll(file)
-	check(err)
-
-	return content
-}
-
-// check is a helper function which streamlines error checking
-func check(e error) {
-	if e != nil {
-		panic(e)
-	}
-}
-func (h *FileLoader) ServeHTTP(res http.ResponseWriter, req *http.Request) {
-	if strings.Contains(req.URL.Path, "chrome_tool") {
-		res.Header().Set("Content-Type", "application/json")
-		res.Write([]byte(`{"code":0,"data":[],"info":"操作成功"}`))
-		return
-	}
-	requestedFilename := strings.TrimPrefix(req.URL.Path, "/")
-	mimeString := mime.TypeByExtension(requestedFilename)
-	if strings.Contains(requestedFilename, ".js") {
-		mimeString = "application/javascript"
-	}
-	res.Header().Set("Content-Type", mimeString)
-	if strings.Contains(req.URL.Path, "/plugin/") {
-		paths := strings.Split(requestedFilename, "/")
-		fmt.Printf("%#v\n", paths)
-		pluginName := paths[1]
-		filename := ""
-		if len(paths) == 2 {
-			filename = "index.html"
-		} else {
-			filename = strings.Join(paths[2:], "/")
-		}
-		requestedFilename = "./plugin/" + pluginName + ".zip"
-		// 打开一个zip格式文件
-		r, err := zip.OpenReader(requestedFilename)
-		if err != nil {
-			res.WriteHeader(http.StatusNotFound)
-			res.Write([]byte(err.Error()))
-			return
-		}
-		defer r.Close()
-		fmt.Printf("filename %#v\n", filename)
-		f, err := r.Open(filename)
-		if err != nil {
-			res.WriteHeader(http.StatusNotFound)
-			res.Write([]byte(err.Error()))
-			return
-		}
-		defer f.Close()
-		res.Header().Set("Cache-Control", "max-age=604800")
-		res.Write(readAll(f))
-	} else {
-		fileData, err := os.ReadFile(requestedFilename)
-		if err != nil {
-
-			res.WriteHeader(http.StatusNotFound)
-			res.Write([]byte("404"))
-
-			return
-		}
-		res.Write(fileData)
-	}
-
-}
-
 func main() {
-	// Create an instance of the app structure
-	app := NewApp()
+	if err := paths.EnsureDirs(); err != nil {
+		slog.Error("初始化数据目录失败", "error", err)
+		os.Exit(1)
+	}
 
-	// Create application with options
-	err := wails.Run(&options.App{
-		Title:            "网页工具箱",
-		Width:            1024,
-		Height:           768,
-		Assets:           assets,
-		BackgroundColour: &options.RGBA{R: 27, G: 38, B: 54, A: 1},
-		OnStartup:        app.startup,
-		AssetsHandler:    NewFileLoader(),
-		Bind: []interface{}{
-			app,
+	mgr := plugin.NewManager(paths.PluginsDir(), paths.DataDir()+"/plugins.json")
+	if err := mgr.LoadInstalled(); err != nil {
+		slog.Warn("加载已安装插件失败", "error", err)
+	}
+	rtr := router.New()
+	api := pluginapi.New(mgr)
+	assetSvc := server.NewAssetService(mgr, rtr, api)
+	rulesPath := filepath.Join(paths.DataDir(), "rules.json")
+	assetSvc.SetGlobalRules(server.LoadOrCreateGlobalRules(rulesPath))
+	hostSvc := hostservice.NewPluginService(mgr, rtr, assetSvc, rulesPath)
+
+	frontend, err := fs.Sub(assets, "frontend/dist")
+	if err != nil {
+		slog.Error("嵌入前端资源失败", "error", err)
+		os.Exit(1)
+	}
+
+	app := application.New(application.Options{
+		Name:        "WebTool",
+		Description: "插件化网页工具箱",
+		LogLevel:    slog.LevelInfo,
+		Services: []application.Service{
+			application.NewServiceWithOptions(hostSvc, application.ServiceOptions{
+				Name: "webtool.host",
+			}),
+			application.NewServiceWithOptions(assetSvc, application.ServiceOptions{
+				Name:  "webtool.assets",
+				Route: "/p/",
+			}),
+		},
+		Assets: application.AssetOptions{
+			Handler: application.AssetFileServerFS(frontend),
+			// 根级绝对路径请求按 Referer 回填到来源插件的 token 空间
+			Middleware:     server.RefererRewriteMiddleware,
+			DisableLogging: true,
+		},
+		SingleInstance: &application.SingleInstanceOptions{
+			UniqueID: "com.webtool.desktop",
 		},
 	})
 
-	if err != nil {
-		println("Error:", err)
+	app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name:      "main",
+		Title:     "WebTool",
+		Width:     1280,
+		Height:    860,
+		MinWidth:  960,
+		MinHeight: 640,
+	})
+
+	if err := app.Run(); err != nil {
+		slog.Error("应用退出", "error", err)
+		os.Exit(1)
 	}
 }

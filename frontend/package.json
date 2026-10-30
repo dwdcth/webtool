@@ -1,18 +1,23 @@
 {
-  "name": "frontend",
+  "name": "webtool-frontend",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
-    "bulma": "^0.9.4",
-    "vue": "^3.2.37"
+    "@wailsio/runtime": "3.0.0",
+    "vue": "^3.5.25"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^3.0.1",
-    "vite": "^3.0.2"
+    "@tailwindcss/vite": "^4.1.17",
+    "@vitejs/plugin-vue": "^6.0.2",
+    "tailwindcss": "^4.1.17",
+    "typescript": "~5.9.3",
+    "vite": "^7.2.6",
+    "vue-tsc": "^3.1.6"
   }
 }

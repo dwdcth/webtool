@@ -1,7 +1,20 @@
-.vite/
+# 构建产物与依赖
 build/
-**node_modules/
-**dist/
-*.exe
-frontend/package.json.md5
+frontend/node_modules/
+frontend/dist/
+
+# wails3 生成的 TS bindings（由 Go 服务生成，勿手改）
+frontend/bindings/
+
+# 旧版 Wails2 残留
 frontend/wailsjs/
+frontend/package.json.md5
+
+# IDE / 系统
+.vscode/
+.idea/
+.DS_Store
+*.log
+
+# ZCode 会话目录
+.zcode/
