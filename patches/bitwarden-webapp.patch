@@ -105,10 +105,18 @@ index 84a19f6..d0fcd7d 100644
    }
  }
 diff --git a/apps/web/src/app/platform/web-environment.service.ts b/apps/web/src/app/platform/web-environment.service.ts
-index a9b9aa1..febf2b8 100644
+index a9b9aa1..7431aa9 100644
 --- a/apps/web/src/app/platform/web-environment.service.ts
 +++ b/apps/web/src/app/platform/web-environment.service.ts
-@@ -59,22 +59,68 @@ export class WebEnvironmentService extends DefaultEnvironmentService {
+@@ -13,6 +13,7 @@ import {
+ import {
+   CloudEnvironment,
+   DefaultEnvironmentService,
++  GLOBAL_ENVIRONMENT_KEY,
+   SelfHostedEnvironment,
+ } from "@bitwarden/common/platform/services/default-environment.service";
+ import { StateProvider } from "@bitwarden/common/platform/state";
+@@ -59,8 +60,18 @@ export class WebEnvironmentService extends DefaultEnvironmentService {
        // doesn't need a special-case patch. Build-pipeline-provided values take priority.
        envUrls.send = envUrls.send ?? region.urls.send;
        environment = new WebCloudEnvironment(region, envUrls);
@@ -127,41 +135,39 @@ index a9b9aa1..febf2b8 100644
 +      environment = new CloudEnvironment(fallback);
      }
  
-+    // webtool 补丁：先捕获父类基于持久化状态构建的环境流（下面会覆盖 globalEnvironment$）
-+    const persistedGlobalEnv$ = this.globalEnvironment$;
-+
      // Override the environment observable with a replay subject
-     const subject = new ReplaySubject<Environment>(1);
-     subject.next(environment);
+@@ -69,12 +80,47 @@ export class WebEnvironmentService extends DefaultEnvironmentService {
      this._environmentSubject = subject;
      this.environment$ = subject.asObservable();
      this.globalEnvironment$ = subject.asObservable();
 +
-+    // webtool 补丁：恢复已保存的环境。不能只取流的第一个值——持久化
-+    // 状态异步加载，首值往往是按主机名推导的默认环境；订阅整个流，
-+    // 出现合法的持久化环境（自托管须带 https 基址）才恢复并结束订阅。
-+    // 本地插件托管时 hostname 永远匹配不上官方域，用户上次选择的区域
-+    // 只存在于持久化状态里，必须在这里恢复。
-+    const restoreSub = persistedGlobalEnv$.subscribe((env) => {
-+      if (env == null) {
-+        return;
-+      }
-+      if (env.getRegion() === Region.SelfHosted) {
-+        const urls = env.getUrls();
-+        const base = urls.base ?? urls.webVault ?? "";
-+        if (!base.startsWith("https://")) {
++    // webtool 补丁：恢复已保存的环境。不能订阅派生的 globalEnvironment$——
++    // 持久化状态加载完成前它会先发射推导默认值 CloudEnvironment(US)，曾因
++    // 把该首值当作用户选择而立即退订，真正的自托管状态加载出来时已无人
++    // 监听。改为订阅原始状态流：null 表示尚未加载（跳过），非 null 才是
++    // 用户真实保存的环境。
++    const envStateSub = stateProvider
++      .getGlobal(GLOBAL_ENVIRONMENT_KEY)
++      .state$.subscribe((state) => {
++        if (state == null) {
++          return; // 持久化状态尚未加载完成
++        }
++        if (state.region === Region.SelfHosted) {
++          const urls: Urls = state.urls ?? ({} as Urls);
++          const base = urls.base ?? urls.webVault ?? "";
++          if (!base.startsWith("https://")) {
++            return;
++          }
++          this._environmentSubject.next(new SelfHostedEnvironment(urls));
++          envStateSub.unsubscribe();
 +          return;
 +        }
-+        this._environmentSubject.next(new SelfHostedEnvironment(urls));
-+        restoreSub.unsubscribe();
-+        return;
-+      }
-+      const cfg = this.availableRegions().find((r) => r.key === env.getRegion());
-+      if (cfg != null) {
-+        this._environmentSubject.next(new CloudEnvironment(cfg));
-+        restoreSub.unsubscribe();
-+      }
-+    });
++        const cfg = this.availableRegions().find((r) => r.key === state.region);
++        if (cfg != null) {
++          this._environmentSubject.next(new CloudEnvironment(cfg));
++          envStateSub.unsubscribe();
++        }
++      });
    }
  
    // Web setting env means navigating to a new location
