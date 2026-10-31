@@ -59,6 +59,12 @@ func main() {
 		sum := sha256.Sum256(b)
 		svc.SetBridgeVersion(hex.EncodeToString(sum[:4]))
 	}
+	// 本地 WS 隧道（与真实应用一致）
+	if tunnel, err := server.NewWSTunnel(rtr, mgr); err == nil {
+		svc.SetWSTunnel(tunnel)
+	} else {
+		fmt.Println("WS 隧道启动失败:", err)
+	}
 	svc.SetGlobalRules(server.LoadOrCreateGlobalRules(filepath.Join(paths.DataDir(), "rules.json")))
 
 	mux := http.NewServeMux()

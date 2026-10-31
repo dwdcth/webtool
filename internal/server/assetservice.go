@@ -40,6 +40,7 @@ type AssetService struct {
 	globalRules []intercept.Rule
 	mirrors     map[string]*mirror.Mirror
 	bridgeVer   string
+	wsGate      string
 }
 
 func NewAssetService(mgr *plugin.Manager, rtr *router.Router, api *pluginapi.API) *AssetService {
@@ -143,7 +144,7 @@ func (s *AssetService) serveWeb(w http.ResponseWriter, r *http.Request, mf *mani
 	}
 
 	m := s.mirrorFor(mf, mode)
-	inject := func(b []byte) []byte { return injectBridge(b, mf.UpstreamHosts, s.bridgeVersion()) }
+	inject := func(b []byte) []byte { return injectBridge(b, mf.UpstreamHosts, s.bridgeVersion(), s.wsGateAddr()) }
 	m.ServeHTTP(w, r, sub, inject)
 }
 
@@ -212,11 +213,29 @@ func (s *AssetService) SetBridgeVersion(ver string) {
 	s.mu.Unlock()
 }
 
+// SetWSTunnel 注册本地 WebSocket 隧道，注入 __WT_WS_GATE__ 供
+// bridge.js 把白名单内 ws(s):// 改写到隧道入口。
+func (s *AssetService) SetWSTunnel(t *WSTunnel) {
+	if t == nil {
+		return
+	}
+	s.mu.Lock()
+	s.wsGate = t.Addr()
+	s.mu.Unlock()
+}
+
 // bridgeVersion 读取当前桥脚本版本（未设置为空串）。
 func (s *AssetService) bridgeVersion() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.bridgeVer
+}
+
+// wsGateAddr 读取本地 WS 隧道入口（未设置为空串）。
+func (s *AssetService) wsGateAddr() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.wsGate
 }
 
 // corsHeaders 为插件资源响应设置跨域放行头。
@@ -465,15 +484,20 @@ func matchUpstreamHost(patterns []string, host string) bool {
 }
 
 // injectBridge 把宿主桥脚本注入插件 HTML（幂等）。
-// upstreamHosts 非空时额外在桥脚本之前注入 __WT_UPSTREAM_HOSTS__ 变量，
-// 供 bridge.js 的 fetch/XHR 包装把白名单上游请求改写到代理端点。
+// upstreamHosts 非空时额外在桥脚本之前注入 __WT_UPSTREAM_HOSTS__ 与
+// __WT_WS_GATE__ 变量，供 bridge.js 的 fetch/XHR/WebSocket 包装把白名单
+// 上游请求改写到代理端点 / 本地 WS 隧道。
 // ver 非空时桥脚本以 ?v=<ver> 引用（bridge.js 内容摘要）：/host/ 静态服务
 // 无缓存控制头，宿主升级后若 URL 不变，webview 会继续用缓存的旧桥脚本。
-func injectBridge(html []byte, upstreamHosts []string, ver string) []byte {
+func injectBridge(html []byte, upstreamHosts []string, ver, wsGate string) []byte {
 	upstreamTag := ""
 	if len(upstreamHosts) > 0 && !bytes.Contains(html, []byte("__WT_UPSTREAM_HOSTS__")) {
 		if b, err := json.Marshal(upstreamHosts); err == nil {
-			upstreamTag = `<script>window.__WT_UPSTREAM_HOSTS__=` + string(b) + `;</script>`
+			upstreamTag = `<script>window.__WT_UPSTREAM_HOSTS__=` + string(b)
+			if wsGate != "" {
+				upstreamTag += `;window.__WT_WS_GATE__=` + strconv.Quote(wsGate)
+			}
+			upstreamTag += `;</script>`
 		}
 	}
 	if bytes.Contains(html, []byte(`/host/bridge.js`)) {
@@ -583,7 +607,7 @@ func (s *AssetService) serveBundle(w http.ResponseWriter, r *http.Request, mf *m
 			http.Error(w, "read error: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		b = injectBridge(b, mf.UpstreamHosts, s.bridgeVersion())
+		b = injectBridge(b, mf.UpstreamHosts, s.bridgeVersion(), s.wsGateAddr())
 		w.Header().Set("Content-Type", mimeOverrides[".html"])
 		w.Header().Set("Cache-Control", "no-cache")
 		w.WriteHeader(http.StatusOK)

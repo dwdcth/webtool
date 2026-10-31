@@ -201,15 +201,20 @@ func TestNoUpstreamInjectWithoutHosts(t *testing.T) {
 func TestInjectBridgeVersion(t *testing.T) {
 	html := []byte(`<html><head><title>x</title></head><body></body></html>`)
 	// 无版本：退回无查询标签
-	if out := string(injectBridge(html, nil, "")); !strings.Contains(out, `<script src="/host/bridge.js"></script>`) {
+	if out := string(injectBridge(html, nil, "", "")); !strings.Contains(out, `<script src="/host/bridge.js"></script>`) {
 		t.Fatalf("空版本应使用无查询标签: %s", out)
 	}
 	// 带版本：标签含 ?v=，upstream 变量仍在桥脚本之前
-	out := string(injectBridge(html, []string{"*.bitwarden.com"}, "abcd1234"))
+	out := string(injectBridge(html, []string{"*.bitwarden.com"}, "abcd1234", ""))
 	if !strings.Contains(out, `<script src="/host/bridge.js?v=abcd1234"></script>`) {
 		t.Fatalf("版本未进标签: %s", out)
 	}
 	if up, br := strings.Index(out, "__WT_UPSTREAM_HOSTS__"), strings.Index(out, "/host/bridge.js"); up == -1 || br == -1 || up > br {
 		t.Fatalf("upstream 变量应先于桥脚本: up=%d bridge=%d", up, br)
+	}
+	// 带 WS 隧道：__WT_WS_GATE__ 注入在 upstream 变量同一段
+	out2 := string(injectBridge(html, []string{"*"}, "", "ws://127.0.0.1:12345"))
+	if !strings.Contains(out2, `window.__WT_WS_GATE__="ws://127.0.0.1:12345"`) {
+		t.Fatalf("WS 隧道地址未注入: %s", out2)
 	}
 }

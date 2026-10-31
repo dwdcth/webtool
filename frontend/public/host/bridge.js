@@ -317,6 +317,38 @@
         } catch (e) { /* 解析失败按原样走原生 */ }
         return nativeOpen.apply(this, args);
       };
+
+      // WebSocket 包装：命中白名单的外站 ws(s):// 改写到本地隧道
+      // （__WT_WS_GATE__，由宿主注入）。WebKitGTK 的 WS 不走系统代理、
+      // wails:// scheme 下也无法 upgrade 回宿主，外站 WS 直连常失败
+      // （Bitwarden SignalR 通知为仅 WS 传输，无长轮询降级）。
+      var nativeWS = window.WebSocket;
+      function ProxiedWebSocket(url, protocols) {
+        try {
+          var abs = new URL(String(url), location.href);
+          if ((abs.protocol === 'ws:' || abs.protocol === 'wss:') && window.__WT_WS_GATE__) {
+            for (var i = 0; i < upstreamHosts.length; i++) {
+              if (matchUpstreamHost(upstreamHosts[i], abs.hostname)) {
+                var tunnel = window.__WT_WS_GATE__ + '/tunnel?token=' + m[1] +
+                  '&url=' + encodeURIComponent(abs.href);
+                return protocols === undefined
+                  ? new nativeWS(tunnel)
+                  : new nativeWS(tunnel, protocols);
+              }
+            }
+          }
+        } catch (e) { /* 解析失败走原生 */ }
+        return protocols === undefined
+          ? new nativeWS(url)
+          : new nativeWS(url, protocols);
+      }
+      try {
+        ProxiedWebSocket.prototype = nativeWS.prototype; // instanceof 兼容
+        ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'].forEach(function (k) {
+          try { Object.defineProperty(ProxiedWebSocket, k, { value: nativeWS[k] }); } catch (e) { /* 非致命 */ }
+        });
+        window.WebSocket = ProxiedWebSocket;
+      } catch (e) { /* 包装失败保持原生 WebSocket */ }
     }
   } catch (e) { /* 包装失败回退原生行为 */ }
 

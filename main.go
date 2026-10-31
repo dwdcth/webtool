@@ -41,6 +41,13 @@ func main() {
 		sum := sha256.Sum256(b)
 		assetSvc.SetBridgeVersion(hex.EncodeToString(sum[:4]))
 	}
+	// 本地 WebSocket 隧道：插件内白名单外站 ws(s):// 改写至此转连
+	// （SignalR 通知等；WebKitGTK 的 WS 不走系统代理）
+	if tunnel, err := server.NewWSTunnel(rtr, mgr); err == nil {
+		assetSvc.SetWSTunnel(tunnel)
+	} else {
+		slog.Error("WS 隧道启动失败（插件外站 WebSocket 将直连）", "error", err)
+	}
 	rulesPath := filepath.Join(paths.DataDir(), "rules.json")
 	assetSvc.SetGlobalRules(server.LoadOrCreateGlobalRules(rulesPath))
 	hostSvc := hostservice.NewPluginService(mgr, rtr, assetSvc, rulesPath)
