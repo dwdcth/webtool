@@ -15,14 +15,15 @@ index 8678f5a..8face32 100644
    <div bitTypography="body2">
      {{ "accessing" | i18n }}:
 diff --git a/apps/web/src/app/components/environment-selector/environment-selector.component.ts b/apps/web/src/app/components/environment-selector/environment-selector.component.ts
-index 84a19f6..1d35509 100644
+index 84a19f6..47d7d6b 100644
 --- a/apps/web/src/app/components/environment-selector/environment-selector.component.ts
 +++ b/apps/web/src/app/components/environment-selector/environment-selector.component.ts
-@@ -2,15 +2,19 @@
+@@ -2,15 +2,20 @@
  // @ts-strict-ignore
  import { Component, OnInit } from "@angular/core";
  import { Router } from "@angular/router";
-+import { firstValueFrom } from "rxjs";
++import { Subject } from "rxjs";
++import { takeUntil } from "rxjs/operators";
  import { Observable } from "rxjs";
  
  import { AvailableRegionsService } from "@bitwarden/common/platform/abstractions/available-regions.service";
@@ -38,7 +39,7 @@ index 84a19f6..1d35509 100644
  
  import { SharedModule } from "../../shared";
  
-@@ -27,8 +31,25 @@ export class EnvironmentSelectorComponent implements OnInit {
+@@ -27,8 +32,25 @@ export class EnvironmentSelectorComponent implements OnInit {
      private environmentService: EnvironmentService,
      private availableRegionsService: AvailableRegionsService,
      private router: Router,
@@ -64,27 +65,42 @@ index 84a19f6..1d35509 100644
    protected availableRegions$: Observable<RegionConfig[]> =
      this.availableRegionsService.availableRegions$;
    protected currentRegion?: RegionConfig;
-@@ -40,6 +61,18 @@ export class EnvironmentSelectorComponent implements OnInit {
+@@ -40,9 +62,29 @@ export class EnvironmentSelectorComponent implements OnInit {
      this.showRegionSelector = !this.platformUtilsService.isSelfHost();
      this.routeAndParams = `/#${this.router.url}`;
  
-+    // webtool 补丁：优先从当前环境显示（自托管时展示"自托管"及服务器主机名，
-+    // 而不是按 window.location 主机名匹配——本地插件托管时永远匹配不上）
-+    const currentEnv = await firstValueFrom(this.environmentService.environment$);
-+    if (currentEnv != null && currentEnv.getRegion() === Region.SelfHosted) {
-+      this.currentRegion = {
-+        key: Region.SelfHosted,
-+        domain: `自托管 (${Utils.getHost(currentEnv.getWebVaultUrl())})`,
-+        urls: currentEnv.getUrls(),
-+      } as RegionConfig;
-+      return;
-+    }
+-    const host = Utils.getHost(window.location.href);
+-    this.currentRegion = this.environmentService
+-      .availableRegions()
+-      .find((r) => Utils.getHost(r.urls.webVault) === host);
++    // webtool 补丁：响应式显示当前环境。自托管时展示服务器主机名，
++    // 云端区域按 window.location 主机名匹配（本地插件托管时匹配不上则空白）
++    this.environmentService.environment$
++      .pipe(takeUntil(this.destroy$ ?? new Subject()))
++      .subscribe((env) => {
++        if (env != null && env.getRegion() === Region.SelfHosted) {
++          this.currentRegion = {
++            key: Region.SelfHosted,
++            domain: `自托管 (${Utils.getHost(env.getWebVaultUrl())})`,
++            urls: env.getUrls(),
++          } as RegionConfig;
++        } else {
++          const host = Utils.getHost(window.location.href);
++          this.currentRegion = this.environmentService
++            .availableRegions()
++            .find((r) => Utils.getHost(r.urls.webVault) === host);
++        }
++      });
++  }
 +
-     const host = Utils.getHost(window.location.href);
-     this.currentRegion = this.environmentService
-       .availableRegions()
++  private destroy$ = new Subject<void>();
++  ngOnDestroy() {
++    this.destroy$.next();
++    this.destroy$.complete();
+   }
+ }
 diff --git a/apps/web/src/app/platform/web-environment.service.ts b/apps/web/src/app/platform/web-environment.service.ts
-index a9b9aa1..2e57c10 100644
+index a9b9aa1..647069a 100644
 --- a/apps/web/src/app/platform/web-environment.service.ts
 +++ b/apps/web/src/app/platform/web-environment.service.ts
 @@ -63,18 +63,39 @@ export class WebEnvironmentService extends DefaultEnvironmentService {
@@ -128,3 +144,19 @@ index a9b9aa1..2e57c10 100644
      }
  
      // Find the region
+@@ -101,11 +122,10 @@ export class WebEnvironmentService extends DefaultEnvironmentService {
+       throw new Error("The selected region is not known as an available region.");
+     }
+ 
+-    // Preserve the current in app route + params in the new location
+-    const routeAndParams = `/#${this.router.url}`;
+-    this.win.location.href = chosenRegionConfig.urls.webVault + routeAndParams;
+-
+-    // This return shouldn't matter as we are about to leave the current window
++    // webtool 补丁：不导航走（本地插件场景导航到外部 vault 会脱离代理/白屏），
++    // 直接切换到对应云端环境
++    this._environmentSubject.next(new CloudEnvironment(chosenRegionConfig));
++    await super.setEnvironment(chosenRegionConfig.key as Region);
+     return chosenRegionConfig.urls;
+   }
+ 
