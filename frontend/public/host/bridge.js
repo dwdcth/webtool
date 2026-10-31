@@ -205,5 +205,68 @@
     }
   } catch (e) { /* 补丁失败不影响插件本体 */ }
 
+  // ---- 上游代理包装 ----
+  // manifest 声明 webtool.upstreamHosts 后，宿主在页面里注入
+  // __WT_UPSTREAM_HOSTS__ 白名单；本包装把命中白名单的外部请求
+  // （fetch / XMLHttpRequest）改写到 /p/<token>/__wt__/upstream?url=...，
+  // 由 Go 侧代理转发，绕过 CORS（Bitwarden 等需直连官方 API 的插件）。
+  // 整段 try/catch：任何异常都回退原生行为，不影响插件本体。
+  try {
+    var upstreamHosts = window.__WT_UPSTREAM_HOSTS__;
+    if (Array.isArray(upstreamHosts) && upstreamHosts.length > 0) {
+      // matchUpstreamHost 与 Go 侧语义一致：*.x.com 匹配任意层级子域
+      // （含 x.com 本身）；不含 * 时精确匹配；否则 false
+      var matchUpstreamHost = function (pattern, host) {
+        if (!pattern || !host) return false;
+        pattern = String(pattern).toLowerCase();
+        host = String(host).toLowerCase();
+        if (pattern.indexOf('*.') === 0) {
+          var suffix = pattern.slice(1); // '.x.com'
+          return host === pattern.slice(2) || host.slice(-suffix.length) === suffix;
+        }
+        return pattern === host;
+      };
+
+      // 命中白名单返回代理 URL（基于与 base 相同的 token 前缀），
+      // 未命中或非 http(s) 返回 null（走原生）
+      var upstreamProxyUrl = function (input) {
+        var abs = new URL(String(input), location.href);
+        if (abs.protocol !== 'http:' && abs.protocol !== 'https:') return null;
+        for (var i = 0; i < upstreamHosts.length; i++) {
+          if (matchUpstreamHost(upstreamHosts[i], abs.hostname)) {
+            return '/p/' + m[1] + '/__wt__/upstream?url=' + encodeURIComponent(abs.href);
+          }
+        }
+        return null;
+      };
+
+      // fetch 包装：仅改写字符串 / URL 对象形式的地址，
+      // Request 对象等其余形态原样放行
+      var nativeFetch = window.fetch.bind(window);
+      window.fetch = function (input, init) {
+        try {
+          if (typeof input === 'string' || input instanceof URL) {
+            var proxied = upstreamProxyUrl(input);
+            if (proxied) return nativeFetch(proxied, init);
+          }
+        } catch (e) { /* 解析失败按原样走原生 */ }
+        return nativeFetch(input, init);
+      };
+
+      // XHR 包装：只改写 open 的 URL，send / setRequestHeader 等不动
+      var nativeOpen = XMLHttpRequest.prototype.open;
+      XMLHttpRequest.prototype.open = function (method, url) {
+        var args = Array.prototype.slice.call(arguments);
+        try {
+          if (typeof url === 'string' || url instanceof URL) {
+            var proxied = upstreamProxyUrl(url);
+            if (proxied) args[1] = proxied;
+          }
+        } catch (e) { /* 解析失败按原样走原生 */ }
+        return nativeOpen.apply(this, args);
+      };
+    }
+  } catch (e) { /* 包装失败回退原生行为 */ }
+
   document.dispatchEvent(new CustomEvent('webtool:bridge-ready'));
 })();

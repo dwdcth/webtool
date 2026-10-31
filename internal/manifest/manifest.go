@@ -74,9 +74,10 @@ type Manifest struct {
 	SourceURL    string            `json:"sourceUrl,omitempty"` // web/link 插件的远程地址
 	Mode         string            `json:"mode,omitempty"`      // web 插件：live|record|offline
 	DevURL       string            `json:"devUrl,omitempty"`    // 开发模式：直载 dev server
-	Sandbox      bool              `json:"sandbox,omitempty"`   // 严格沙箱（默认关闭，兼容 WASM/Worker 插件）
-	Interceptors []intercept.Rule  `json:"interceptors,omitempty"`
-	Dir          string            `json:"-"` // 安装目录（运行时填充）
+	Sandbox       bool              `json:"sandbox,omitempty"` // 严格沙箱（默认关闭，兼容 WASM/Worker 插件）
+	Interceptors  []intercept.Rule  `json:"interceptors,omitempty"`
+	UpstreamHosts []string          `json:"upstreamHosts,omitempty"` // 允许经 /p/<token>/__wt__/upstream 代理的上游域名
+	Dir           string            `json:"-"`                       // 安装目录（运行时填充）
 }
 
 // package.json 原始结构（unihub 兼容）。
@@ -116,6 +117,9 @@ type webtool struct {
 	// 默认关闭：WASM/Worker 类插件（如 pearocr）在 opaque origin 下
 	// 无法创建 Worker、fetch 需跨域授权，兼容性优先。
 	Sandbox bool `json:"sandbox"`
+	// UpstreamHosts 声明本插件允许代理转发的上游域名，
+	// 支持 *.example.com 通配或精确域名。
+	UpstreamHosts []string `json:"upstreamHosts"`
 }
 
 // author 兼容 "string" 与 {name: "..."} 两种写法。
@@ -198,6 +202,7 @@ func Parse(raw []byte, fallbackID, fallbackName string) (*Manifest, error) {
 			m.Mode = pkg.Webtool.Mode
 			m.DevURL = pkg.Webtool.DevURL
 			m.Sandbox = pkg.Webtool.Sandbox
+			m.UpstreamHosts = pkg.Webtool.UpstreamHosts
 			if len(pkg.Webtool.Interceptors) > 0 {
 				rules, err := intercept.Compile(pkg.Webtool.Interceptors)
 				if err != nil {

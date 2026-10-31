@@ -34,6 +34,7 @@ type Info struct {
 	SourceURL       string             `json:"sourceUrl,omitempty"`
 	Mode            string             `json:"mode,omitempty"` // web 插件：live|record|offline
 	Sandbox         bool               `json:"sandbox"`
+	UpstreamHosts   []string           `json:"upstreamHosts,omitempty"`
 	Enabled         bool               `json:"enabled"`
 	InstalledAt     time.Time          `json:"installedAt"`
 	Source          string             `json:"source"`
@@ -553,6 +554,7 @@ func (m *Manager) toInfo(mf *manifest.Manifest, rec registry.Record) Info {
 		SourceURL:       mf.SourceURL,
 		Mode:            mf.Mode,
 		Sandbox:         mf.Sandbox,
+		UpstreamHosts:   mf.UpstreamHosts,
 		Enabled:         rec.Enabled,
 		InstalledAt:     rec.InstalledAt,
 		Source:          rec.Source,

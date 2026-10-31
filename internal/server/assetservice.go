@@ -6,15 +6,19 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"webtool/internal/intercept"
 	"webtool/internal/manifest"
@@ -55,6 +59,14 @@ func (s *AssetService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	pluginID, ok := s.rtr.PluginOf(token)
 	if !ok {
 		http.Error(w, "unknown plugin token", http.StatusNotFound)
+		return
+	}
+
+	// 上游代理：/p/<token>/__wt__/upstream?url=<绝对URL>
+	// 供需直连外部 API 但被 CORS 拦截的插件（如 Bitwarden）使用，
+	// 目标 host 必须命中 manifest.webtool.upstreamHosts 白名单。
+	if strings.HasPrefix(rest, "__wt__/upstream") {
+		s.serveUpstream(w, r, pluginID)
 		return
 	}
 
@@ -127,7 +139,7 @@ func (s *AssetService) serveWeb(w http.ResponseWriter, r *http.Request, mf *mani
 	}
 
 	m := s.mirrorFor(mf, mode)
-	inject := func(b []byte) []byte { return injectBridge(b) }
+	inject := func(b []byte) []byte { return injectBridge(b, mf.UpstreamHosts) }
 	m.ServeHTTP(w, r, sub, inject)
 }
 
@@ -188,19 +200,155 @@ func corsHeaders(w http.ResponseWriter) {
 	h.Set("Access-Control-Allow-Headers", "Content-Type")
 }
 
-// injectBridge 把宿主桥脚本注入插件 HTML（幂等）。
-func injectBridge(html []byte) []byte {
-	if bytes.Contains(html, []byte(`/host/bridge.js`)) {
-		return html
+// upstreamClient 代理转发专用：60s 超时；不跟随重定向，
+// 3xx 与 Location 原样透传给插件自行处理。
+var upstreamClient = &http.Client{
+	Timeout: 60 * time.Second,
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+}
+
+// upstreamAllowHeaders 允许透传给上游的请求头白名单。
+// 白名单制而非全量透传：避免插件侧 Cookie/trace 头意外泄漏给第三方，
+// 同时保住 Bitwarden 等客户端必需的鉴权与设备标识头。
+var upstreamAllowHeaders = []string{
+	"Content-Type", "Authorization", "Accept", "Accept-Language", "Accept-Encoding",
+	"Bit-Client-Name", "Bit-Client-Version", "Auth-Request", "Device-Type",
+	"Pragma", "Cache-Control",
+}
+
+// upstreamMaxBody 代理响应体拷贝上限（64MB），防止超大响应拖垮宿主。
+const upstreamMaxBody = 64 << 20
+
+// serveUpstream 把插件请求代理转发到白名单内的上游 API。
+// GET/POST/PUT/DELETE/PATCH 均支持；OPTIONS 预检由顶部统一 CORS 头处理。
+func (s *AssetService) serveUpstream(w http.ResponseWriter, r *http.Request, pluginID string) {
+	rawURL := r.URL.Query().Get("url")
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		http.Error(w, "bad upstream url", http.StatusBadRequest)
+		return
 	}
+	mf, err := s.mgr.Manifest(pluginID)
+	if err != nil {
+		http.Error(w, "manifest error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !matchUpstreamHost(mf.UpstreamHosts, u.Hostname()) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"upstream host not allowed"}`))
+		return
+	}
+
+	// 重建出站请求：方法与 body 原样，仅透传白名单头
+	out, err := http.NewRequestWithContext(r.Context(), r.Method, rawURL, r.Body)
+	if err != nil {
+		http.Error(w, "bad upstream request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	for _, h := range upstreamAllowHeaders {
+		if v := r.Header.Get(h); v != "" {
+			out.Header.Set(h, v)
+		}
+	}
+	// 透传定长 body：不定长会走 chunked 编码，部分 API 网关会拒绝
+	if n := r.ContentLength; n > 0 {
+		out.ContentLength = n
+	}
+
+	resp, err := upstreamClient.Do(out)
+	if err != nil {
+		http.Error(w, "upstream request failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	// 回写响应：状态码 + 少量必要头（Content-Encoding 随 Accept-Encoding
+	// 透传需要一并回写，否则压缩 body 会被插件按明文解析）
+	h := w.Header()
+	if ct := resp.Header.Get("Content-Type"); ct != "" {
+		h.Set("Content-Type", ct)
+	}
+	if ce := resp.Header.Get("Content-Encoding"); ce != "" {
+		h.Set("Content-Encoding", ce)
+	}
+	if loc := resp.Header.Get("Location"); loc != "" {
+		h.Set("Location", loc)
+	}
+	if ra := resp.Header.Get("Retry-After"); ra != "" {
+		h.Set("Retry-After", ra)
+	}
+	w.WriteHeader(resp.StatusCode)
+	if r.Method != http.MethodHead {
+		_, _ = io.Copy(w, io.LimitReader(resp.Body, upstreamMaxBody)) //nolint:gosec // 上限已钳制
+	}
+}
+
+// matchUpstreamHost 判断 host 是否命中 upstreamHosts 白名单。
+// pattern 形如 *.example.com 时匹配任意层级子域（含 example.com 本身）：
+// api.example.com / a.b.example.com / example.com 命中，
+// notexample.com、api.example.com.evil.io 不命中；不含 * 时精确匹配；
+// 空列表一律拒绝。
+func matchUpstreamHost(patterns []string, host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" || len(patterns) == 0 {
+		return false
+	}
+	for _, p := range patterns {
+		p = strings.ToLower(strings.TrimSpace(p))
+		if p == "" {
+			continue
+		}
+		if strings.HasPrefix(p, "*.") {
+			// 子域通配：后缀必须落在域边界上（.example.com），
+			// 域本身也算命中（与主流 cookie domain 语义一致）
+			suffix := p[1:] // ".example.com"
+			if strings.HasSuffix(host, suffix) || host == p[2:] {
+				return true
+			}
+			continue
+		}
+		if p == host {
+			return true
+		}
+	}
+	return false
+}
+
+// injectBridge 把宿主桥脚本注入插件 HTML（幂等）。
+// upstreamHosts 非空时额外在桥脚本之前注入 __WT_UPSTREAM_HOSTS__ 变量，
+// 供 bridge.js 的 fetch/XHR 包装把白名单上游请求改写到代理端点。
+func injectBridge(html []byte, upstreamHosts []string) []byte {
+	upstreamTag := ""
+	if len(upstreamHosts) > 0 && !bytes.Contains(html, []byte("__WT_UPSTREAM_HOSTS__")) {
+		if b, err := json.Marshal(upstreamHosts); err == nil {
+			upstreamTag = `<script>window.__WT_UPSTREAM_HOSTS__=` + string(b) + `;</script>`
+		}
+	}
+	if bytes.Contains(html, []byte(`/host/bridge.js`)) {
+		// 已含桥脚本：只补插 upstream 变量（找不到精确标签位置则退回常规注入点）
+		if upstreamTag == "" {
+			return html
+		}
+		if i := bytes.Index(html, []byte(bridgeScriptTag)); i >= 0 {
+			var out bytes.Buffer
+			out.Write(html[:i])
+			out.WriteString(upstreamTag)
+			out.Write(html[i:])
+			return out.Bytes()
+		}
+	}
+	inject := upstreamTag + bridgeScriptTag
 	if loc := headOpenRe.FindIndex(html); loc != nil {
 		var out bytes.Buffer
 		out.Write(html[:loc[1]])
-		out.WriteString(bridgeScriptTag)
+		out.WriteString(inject)
 		out.Write(html[loc[1]:])
 		return out.Bytes()
 	}
-	return append([]byte(bridgeScriptTag), html...)
+	return append([]byte(inject), html...)
 }
 
 // resolvePluginFile 把请求子路径安全映射到插件目录内文件。
@@ -286,7 +434,7 @@ func (s *AssetService) serveBundle(w http.ResponseWriter, r *http.Request, mf *m
 			http.Error(w, "read error: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		b = injectBridge(b)
+		b = injectBridge(b, mf.UpstreamHosts)
 		w.Header().Set("Content-Type", mimeOverrides[".html"])
 		w.Header().Set("Cache-Control", "no-cache")
 		w.WriteHeader(http.StatusOK)
