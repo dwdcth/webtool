@@ -9,7 +9,7 @@ webtool 内置的 Bitwarden 插件基于 [bitwarden/clients](https://github.com/
 
 | 部分 | 位置 | 角色 |
 |---|---|---|
-| vault 补丁（升级需重放） | `patches/bitwarden-webapp.patch` | 对上游 6 个文件的修改，全部带 `webtool 补丁` 注释 |
+| vault 补丁（升级需重放） | `patches/bitwarden-webapp.patch` | 对上游 7 个文件的修改，全部带 `webtool 补丁` 注释 |
 | 插件包 | `plugin/bitwarden.zip` | 构建产物 + unihub 清单（package.json），版本号 `0.0.0-wt<N>` |
 | 宿主桥 | `frontend/public/host/bridge.js` | 通用（非 Bitwarden 专属）：fetch/XHR 代理改写、WebSocket 隧道改写 |
 | 上游代理 | `internal/server/assetservice.go` | `/p/<token>/__wt__/upstream?url=...`，跟随系统代理（clash 等） |
@@ -65,6 +65,15 @@ webtool 内置的 Bitwarden 插件基于 [bitwarden/clients](https://github.com/
 `isAvailable(Never)` 由 `isDev()` 改为 `true`：官方 web 因公共电脑安全仅 dev 构建放
 "从不超时"；本地插件是单用户桌面场景（与官方浏览器插件/桌面端一致），登录后
 设置 → 安全 → 会话超时 下拉可选"从不"。
+
+### 6. `libs/state/src/core/state-definitions.ts`（wt10，性能关键）
+
+去掉官方 web 对 5 个 vault 数据状态的 `{ web: "memory" }` 降级：`SYNC_DISK`、
+`CIPHERS_DISK`、`FOLDER_DISK`、`COLLECTION_DISK`、`SEND_DISK`。官方立场是公共
+电脑不留内容（重启后全量重新同步，每次解锁都慢）；改回默认 disk（localStorage）
+后，加密形态（EncString）的密码项/文件夹/集合/Send 跨启动缓存，重启→本地解锁
+→缓存渲染→后台增量同步，与桌面端行为一致。
+**不改这个，每次打开都要全量下载 vault。**
 
 ## 升级步骤
 
@@ -127,6 +136,7 @@ cd /tmp/bw-clients && git diff > <webtool>/patches/bitwarden-webapp.patch
 | `core.module.ts` 存储工厂 | 上游调整 DI | 目标只有一个：`OBSERVABLE_DISK_STORAGE` → `window.localStorage` |
 | `environment-selector` 组件 | 上游改模板/组件结构 | 保留三件事：菜单强制显示、自托管入口、指示器响应式；模板类名若变，菜单项仍用 `<a bitMenuItem>` |
 | `jslib-services.module.ts` | 上游改 ENV_ADDITIONAL_REGIONS 注入方式 | 任何形式都要滤掉 LOCAL；若上游不再注入则此段可删 |
+| `state-definitions.ts` | 上游新增 vault 状态 | 原则：凡 `{ web: "memory" }` 降级的**数据**状态（ciphers/folder/collection/send/sync）都去掉 override；用户偏好类的 `disk-local` 不动 |
 | `web-session-timeout-type.service.ts` | 上游调整超时类型枚举 | 保持 `Never → true` 即可 |
 | 构建配置 | 上游改 nx/workspace 布局 | 确认命令仍是 `npx nx build web --configuration=oss`；oss 配置内置 `--deploy-url` 相对路径 |
 
