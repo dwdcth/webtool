@@ -127,6 +127,22 @@ index b3f689a..f366518 100644
      deps: [],
    }),
    safeProvider({
+diff --git a/apps/web/src/app/key-management/session-timeout/services/web-session-timeout-type.service.ts b/apps/web/src/app/key-management/session-timeout/services/web-session-timeout-type.service.ts
+index 458befc..07d273e 100644
+--- a/apps/web/src/app/key-management/session-timeout/services/web-session-timeout-type.service.ts
++++ b/apps/web/src/app/key-management/session-timeout/services/web-session-timeout-type.service.ts
+@@ -18,7 +18,10 @@ export class WebSessionTimeoutTypeService implements SessionTimeoutTypeService {
+       case VaultTimeoutStringType.Custom:
+         return true;
+       case VaultTimeoutStringType.Never:
+-        return this.platformUtilsService.isDev();
++        // webtool 补丁：放开"从不超时"。官方 web 因公共电脑安全仅 dev
++        // 构建可用；本地插件托管是单用户桌面场景（与官方浏览器插件/
++        // 桌面端一致），且磁盘状态已持久（localStorage），可用 Never。
++        return true;
+       default:
+         if (isVaultTimeoutTypeNumeric(type)) {
+           return true;
 diff --git a/apps/web/src/app/platform/web-environment.service.ts b/apps/web/src/app/platform/web-environment.service.ts
 index a9b9aa1..0039b49 100644
 --- a/apps/web/src/app/platform/web-environment.service.ts
@@ -261,3 +277,21 @@ index a9b9aa1..0039b49 100644
    }
  
    getEnvironment$(userId: UserId): Observable<Environment> {
+diff --git a/libs/angular/src/services/jslib-services.module.ts b/libs/angular/src/services/jslib-services.module.ts
+index 6a3c9db..9bc96f6 100644
+--- a/libs/angular/src/services/jslib-services.module.ts
++++ b/libs/angular/src/services/jslib-services.module.ts
+@@ -861,7 +861,12 @@ const safeProviders: SafeProvider[] = [
+   }),
+   safeProvider({
+     provide: ENV_ADDITIONAL_REGIONS,
+-    useValue: process.env.ADDITIONAL_REGIONS as unknown as RegionConfig[],
++    // webtool 补丁：过滤掉构建期注入的 LOCAL 开发区域
++    // （https://localhost:8080，供上游本地联调；本地插件托管场景无服务
++    // 可用，且 localhost 本质是自托管的一种，入口应统一走"自托管…"对话框）
++    useValue: (process.env.ADDITIONAL_REGIONS as unknown as RegionConfig[] ?? []).filter(
++      (r) => String(r.key) !== "LOCAL",
++    ),
+   }),
+   safeProvider({
+     provide: EnvironmentService,
