@@ -15,10 +15,21 @@ index 8678f5a..8face32 100644
    <div bitTypography="body2">
      {{ "accessing" | i18n }}:
 diff --git a/apps/web/src/app/components/environment-selector/environment-selector.component.ts b/apps/web/src/app/components/environment-selector/environment-selector.component.ts
-index 84a19f6..e9281e8 100644
+index 84a19f6..1d35509 100644
 --- a/apps/web/src/app/components/environment-selector/environment-selector.component.ts
 +++ b/apps/web/src/app/components/environment-selector/environment-selector.component.ts
-@@ -11,6 +11,8 @@ import {
+@@ -2,15 +2,19 @@
+ // @ts-strict-ignore
+ import { Component, OnInit } from "@angular/core";
+ import { Router } from "@angular/router";
++import { firstValueFrom } from "rxjs";
+ import { Observable } from "rxjs";
+ 
+ import { AvailableRegionsService } from "@bitwarden/common/platform/abstractions/available-regions.service";
+ import {
+   EnvironmentService,
++  Region,
+   RegionConfig,
  } from "@bitwarden/common/platform/abstractions/environment.service";
  import { PlatformUtilsService } from "@bitwarden/common/platform/abstractions/platform-utils.service";
  import { Utils } from "@bitwarden/common/platform/misc/utils";
@@ -27,7 +38,7 @@ index 84a19f6..e9281e8 100644
  
  import { SharedModule } from "../../shared";
  
-@@ -27,8 +29,25 @@ export class EnvironmentSelectorComponent implements OnInit {
+@@ -27,8 +31,25 @@ export class EnvironmentSelectorComponent implements OnInit {
      private environmentService: EnvironmentService,
      private availableRegionsService: AvailableRegionsService,
      private router: Router,
@@ -53,6 +64,25 @@ index 84a19f6..e9281e8 100644
    protected availableRegions$: Observable<RegionConfig[]> =
      this.availableRegionsService.availableRegions$;
    protected currentRegion?: RegionConfig;
+@@ -40,6 +61,18 @@ export class EnvironmentSelectorComponent implements OnInit {
+     this.showRegionSelector = !this.platformUtilsService.isSelfHost();
+     this.routeAndParams = `/#${this.router.url}`;
+ 
++    // webtool 补丁：优先从当前环境显示（自托管时展示"自托管"及服务器主机名，
++    // 而不是按 window.location 主机名匹配——本地插件托管时永远匹配不上）
++    const currentEnv = await firstValueFrom(this.environmentService.environment$);
++    if (currentEnv != null && currentEnv.getRegion() === Region.SelfHosted) {
++      this.currentRegion = {
++        key: Region.SelfHosted,
++        domain: `自托管 (${Utils.getHost(currentEnv.getWebVaultUrl())})`,
++        urls: currentEnv.getUrls(),
++      } as RegionConfig;
++      return;
++    }
++
+     const host = Utils.getHost(window.location.href);
+     this.currentRegion = this.environmentService
+       .availableRegions()
 diff --git a/apps/web/src/app/platform/web-environment.service.ts b/apps/web/src/app/platform/web-environment.service.ts
 index a9b9aa1..2e57c10 100644
 --- a/apps/web/src/app/platform/web-environment.service.ts
