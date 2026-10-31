@@ -220,6 +220,7 @@
         if (!pattern || !host) return false;
         pattern = String(pattern).toLowerCase();
         host = String(host).toLowerCase();
+        if (pattern === '*') return true; // 显式全通配（与 Go 侧语义一致）
         if (pattern.indexOf('*.') === 0) {
           var suffix = pattern.slice(1); // '.x.com'
           return host === pattern.slice(2) || host.slice(-suffix.length) === suffix;

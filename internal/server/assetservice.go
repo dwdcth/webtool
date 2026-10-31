@@ -301,6 +301,10 @@ func matchUpstreamHost(patterns []string, host string) bool {
 		if p == "" {
 			continue
 		}
+		// 显式全通配："*"（语义等同声明 http 权限，供用户自托管地址不定的插件如 Bitwarden 使用）
+		if p == "*" {
+			return true
+		}
 		if strings.HasPrefix(p, "*.") {
 			// 子域通配：后缀必须落在域边界上（.example.com），
 			// 域本身也算命中（与主流 cookie domain 语义一致）

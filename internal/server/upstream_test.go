@@ -53,6 +53,16 @@ func doUpstreamReq(svc *AssetService, method, strippedTarget string, body io.Rea
 	return w
 }
 
+func TestMatchUpstreamHostWildcardAll(t *testing.T) {
+	// "*" 全通配：任意 host 放行（等同 http 权限语义）
+	if !matchUpstreamHost([]string{"*"}, "any.example.com") {
+		t.Fatal("* 应匹配任意域名")
+	}
+	if !matchUpstreamHost([]string{"*.bitwarden.com", "*"}, "vault.mysite.cn") {
+		t.Fatal("含 * 的列表应放行非白名单域")
+	}
+}
+
 func TestUpstreamProxyEndToEnd(t *testing.T) {
 	// httptest 上游：回显方法、body 与白名单头
 	var gotMethod, gotPath, gotBody, gotCT, gotAuth, gotEvil string

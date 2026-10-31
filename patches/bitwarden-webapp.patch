@@ -1,0 +1,100 @@
+diff --git a/apps/web/src/app/components/environment-selector/environment-selector.component.html b/apps/web/src/app/components/environment-selector/environment-selector.component.html
+index 8678f5a..8face32 100644
+--- a/apps/web/src/app/components/environment-selector/environment-selector.component.html
++++ b/apps/web/src/app/components/environment-selector/environment-selector.component.html
+@@ -14,6 +14,11 @@
+       ></bit-icon>
+       {{ region.domain }}
+     </a>
++    <!-- webtool 补丁：自托管服务器配置入口（打开共享环境配置对话框） -->
++    <a bitMenuItem href="javascript:void(0)" (click)="openSelfHostedDialog()">
++      <bit-icon name="bwi-globe" class="bwi-fw bwi-sm" style="visibility: hidden"></bit-icon>
++      自托管…
++    </a>
+   </bit-menu>
+   <div bitTypography="body2">
+     {{ "accessing" | i18n }}:
+diff --git a/apps/web/src/app/components/environment-selector/environment-selector.component.ts b/apps/web/src/app/components/environment-selector/environment-selector.component.ts
+index 84a19f6..e9281e8 100644
+--- a/apps/web/src/app/components/environment-selector/environment-selector.component.ts
++++ b/apps/web/src/app/components/environment-selector/environment-selector.component.ts
+@@ -11,6 +11,8 @@ import {
+ } from "@bitwarden/common/platform/abstractions/environment.service";
+ import { PlatformUtilsService } from "@bitwarden/common/platform/abstractions/platform-utils.service";
+ import { Utils } from "@bitwarden/common/platform/misc/utils";
++import { DialogService, ToastService } from "@bitwarden/components";
++import { SelfHostedEnvConfigDialogComponent } from "@bitwarden/angular/auth/self-hosted-env-config-dialog";
+ 
+ import { SharedModule } from "../../shared";
+ 
+@@ -27,8 +29,25 @@ export class EnvironmentSelectorComponent implements OnInit {
+     private environmentService: EnvironmentService,
+     private availableRegionsService: AvailableRegionsService,
+     private router: Router,
++    private dialogService: DialogService,
++    private toastService: ToastService,
+   ) {}
+ 
++  /**
++   * webtool 补丁：打开自托管环境配置对话框（共享于浏览器扩展/桌面端的组件）。
++   * 对话框保存时自行调用 environmentService.setEnvironment(SelfHosted, urls)。
++   */
++  async openSelfHostedDialog() {
++    const result = await SelfHostedEnvConfigDialogComponent.open(this.dialogService);
++    if (result) {
++      this.toastService.showToast({
++        variant: "success",
++        title: "",
++        message: "环境已保存",
++      });
++    }
++  }
++
+   protected availableRegions$: Observable<RegionConfig[]> =
+     this.availableRegionsService.availableRegions$;
+   protected currentRegion?: RegionConfig;
+diff --git a/apps/web/src/app/platform/web-environment.service.ts b/apps/web/src/app/platform/web-environment.service.ts
+index a9b9aa1..2e57c10 100644
+--- a/apps/web/src/app/platform/web-environment.service.ts
++++ b/apps/web/src/app/platform/web-environment.service.ts
+@@ -63,18 +63,39 @@ export class WebEnvironmentService extends DefaultEnvironmentService {
+       environment = new SelfHostedEnvironment(envUrls);
+     }
+ 
++    // webtool 补丁：先捕获父类基于持久化状态构建的环境流（下面会覆盖 globalEnvironment$）
++    const persistedGlobalEnv$ = this.globalEnvironment$;
++
+     // Override the environment observable with a replay subject
+     const subject = new ReplaySubject<Environment>(1);
+     subject.next(environment);
+     this._environmentSubject = subject;
+     this.environment$ = subject.asObservable();
+     this.globalEnvironment$ = subject.asObservable();
++
++    // webtool 补丁：启动时恢复已保存的自托管环境（覆盖按主机名推导的结果）
++    firstValueFrom(persistedGlobalEnv$)
++      .then((env) => {
++        if (env != null && env.getRegion() === Region.SelfHosted) {
++          this._environmentSubject.next(new SelfHostedEnvironment(env.getUrls()));
++        }
++      })
++      .catch(() => {
++        /* 状态读取失败保持默认环境 */
++      });
+   }
+ 
+   // Web setting env means navigating to a new location
+   async setEnvironment(region: Region | string, urls?: Urls): Promise<Urls> {
++    // webtool 补丁：允许自托管环境（官方 web 假设保险库与服务器同源部署；
++    // 我们作为本地插件托管，保存用户服务器 URL 并即时切换，配合宿主代理）
+     if (region === Region.SelfHosted) {
+-      throw new Error("setEnvironment does not work in web for self-hosted.");
++      if (urls == null || Object.values(urls).every((v) => !v)) {
++        throw new Error("self-hosted environment requires at least one url");
++      }
++      const savedUrls = await super.setEnvironment(Region.SelfHosted, urls);
++      this._environmentSubject.next(new SelfHostedEnvironment(savedUrls));
++      return savedUrls;
+     }
+ 
+     // Find the region
