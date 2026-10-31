@@ -15,7 +15,7 @@ index 8678f5a..8face32 100644
    <div bitTypography="body2">
      {{ "accessing" | i18n }}:
 diff --git a/apps/web/src/app/components/environment-selector/environment-selector.component.ts b/apps/web/src/app/components/environment-selector/environment-selector.component.ts
-index 84a19f6..d0fcd7d 100644
+index 84a19f6..41f2ebc 100644
 --- a/apps/web/src/app/components/environment-selector/environment-selector.component.ts
 +++ b/apps/web/src/app/components/environment-selector/environment-selector.component.ts
 @@ -2,15 +2,20 @@
@@ -65,8 +65,14 @@ index 84a19f6..d0fcd7d 100644
    protected availableRegions$: Observable<RegionConfig[]> =
      this.availableRegionsService.availableRegions$;
    protected currentRegion?: RegionConfig;
-@@ -40,9 +62,34 @@ export class EnvironmentSelectorComponent implements OnInit {
-     this.showRegionSelector = !this.platformUtilsService.isSelfHost();
+@@ -37,12 +59,39 @@ export class EnvironmentSelectorComponent implements OnInit {
+   protected routeAndParams: string;
+ 
+   async ngOnInit() {
+-    this.showRegionSelector = !this.platformUtilsService.isSelfHost();
++    // webtool 补丁：本地插件托管必须提供环境选择（自托管对话框入口）。
++    // oss 构建的 isSelfHost() 是构建期常量 true，会把菜单整个隐藏。
++    this.showRegionSelector = true;
      this.routeAndParams = `/#${this.router.url}`;
  
 -    const host = Utils.getHost(window.location.href);
@@ -105,7 +111,7 @@ index 84a19f6..d0fcd7d 100644
    }
  }
 diff --git a/apps/web/src/app/platform/web-environment.service.ts b/apps/web/src/app/platform/web-environment.service.ts
-index a9b9aa1..7431aa9 100644
+index a9b9aa1..0039b49 100644
 --- a/apps/web/src/app/platform/web-environment.service.ts
 +++ b/apps/web/src/app/platform/web-environment.service.ts
 @@ -13,6 +13,7 @@ import {
@@ -116,27 +122,54 @@ index a9b9aa1..7431aa9 100644
    SelfHostedEnvironment,
  } from "@bitwarden/common/platform/services/default-environment.service";
  import { StateProvider } from "@bitwarden/common/platform/state";
-@@ -59,8 +60,18 @@ export class WebEnvironmentService extends DefaultEnvironmentService {
+@@ -43,15 +44,24 @@ export class WebEnvironmentService extends DefaultEnvironmentService {
+     // The web vault always uses the current location as the base url
+     envUrls.base ??= this.win.location.origin;
+ 
++    // webtool 补丁：本地插件托管判定（wails:// 等非 https origin）。此时
++    // hostname 推导毫无意义：wails://localhost 的 hostname 会误匹配上游
++    // 注入的 LOCAL 开发区域（https://localhost:8080，本机无服务），且
++    // Bitwarden 硬校验 API URL 必须 https://，origin 也不能当基址——
++    // 一律跳过推导，默认官方云 US，真实环境交给恢复逻辑/用户切换。
++    const locallyHosted = !this.win.location.origin.startsWith("https://");
++
+     // Find the region
+     const currentHostname = new URL(this.win.location.href).hostname;
+     const availableRegions = this.availableRegions();
+-    const region = availableRegions.find((r) => {
+-      // We must use hostname as our QA envs use the same
+-      // domain (bitwarden.pw) but different subdomains (qa and euqa)
+-      const webVaultHostname = new URL(r.urls.webVault).hostname;
+-      return webVaultHostname === currentHostname;
+-    });
++    const region = locallyHosted
++      ? undefined
++      : availableRegions.find((r) => {
++          // We must use hostname as our QA envs use the same
++          // domain (bitwarden.pw) but different subdomains (qa and euqa)
++          const webVaultHostname = new URL(r.urls.webVault).hostname;
++          return webVaultHostname === currentHostname;
++        });
+ 
+     let environment: Environment;
+     if (region) {
+@@ -59,8 +69,14 @@ export class WebEnvironmentService extends DefaultEnvironmentService {
        // doesn't need a special-case patch. Build-pipeline-provided values take priority.
        envUrls.send = envUrls.send ?? region.urls.send;
        environment = new WebCloudEnvironment(region, envUrls);
 -    } else {
-+    } else if (this.win.location.origin.startsWith("https://")) {
++    } else if (!locallyHosted) {
        environment = new SelfHostedEnvironment(envUrls);
 +    } else {
-+      // webtool 补丁：本地插件托管（wails:// 等非 https origin）。Bitwarden
-+      // 客户端硬校验所有 API/SignalR URL 必须 https:// 开头（否则抛
-+      // InsecureUrlError，登录等一切 API 调用失败），origin 不能当基址。
-+      // 默认切官方云区域（请求经宿主代理），用户可通过对话框切自托管。
-+      // 注意用 CloudEnvironment 而非 WebCloudEnvironment：后者会把 origin
-+      // 混入 urls，getApiUrl 仍指向 origin。
++      // 默认官方云 US（注意用 CloudEnvironment 而非 WebCloudEnvironment：
++      // 后者会把 origin 混入 urls，getApiUrl 仍指向 origin）
 +      const fallback =
 +        availableRegions.find((r) => r.key === Region.US) ?? availableRegions[0];
 +      environment = new CloudEnvironment(fallback);
      }
  
      // Override the environment observable with a replay subject
-@@ -69,12 +80,47 @@ export class WebEnvironmentService extends DefaultEnvironmentService {
+@@ -69,12 +85,48 @@ export class WebEnvironmentService extends DefaultEnvironmentService {
      this._environmentSubject = subject;
      this.environment$ = subject.asObservable();
      this.globalEnvironment$ = subject.asObservable();
@@ -145,12 +178,13 @@ index a9b9aa1..7431aa9 100644
 +    // 持久化状态加载完成前它会先发射推导默认值 CloudEnvironment(US)，曾因
 +    // 把该首值当作用户选择而立即退订，真正的自托管状态加载出来时已无人
 +    // 监听。改为订阅原始状态流：null 表示尚未加载（跳过），非 null 才是
-+    // 用户真实保存的环境。
++    // 用户真实保存的环境。LOCAL 为上游本地开发区域（https://localhost:8080），
++    // 本地插件场景无意义，跳过不恢复（保持默认官方云）。
 +    const envStateSub = stateProvider
 +      .getGlobal(GLOBAL_ENVIRONMENT_KEY)
 +      .state$.subscribe((state) => {
-+        if (state == null) {
-+          return; // 持久化状态尚未加载完成
++        if (state == null || String(state.region) === "LOCAL") {
++          return; // 未加载完成，或上游本地开发区域
 +        }
 +        if (state.region === Region.SelfHosted) {
 +          const urls: Urls = state.urls ?? ({} as Urls);
@@ -185,7 +219,7 @@ index a9b9aa1..7431aa9 100644
      }
  
      // Find the region
-@@ -101,11 +147,10 @@ export class WebEnvironmentService extends DefaultEnvironmentService {
+@@ -101,12 +153,18 @@ export class WebEnvironmentService extends DefaultEnvironmentService {
        throw new Error("The selected region is not known as an available region.");
      }
  
@@ -194,10 +228,19 @@ index a9b9aa1..7431aa9 100644
 -    this.win.location.href = chosenRegionConfig.urls.webVault + routeAndParams;
 -
 -    // This return shouldn't matter as we are about to leave the current window
+-    return chosenRegionConfig.urls;
++    // webtool 补丁：LOCAL 为上游本地开发区域（https://localhost:8080），
++    // 本地插件场景无服务可用，按 US 处理避免环境被切到不可达地址
++    const effective =
++      String(chosenRegionConfig.key) === "LOCAL"
++        ? this.availableRegions().find((r) => r.key === Region.US) ?? chosenRegionConfig
++        : chosenRegionConfig;
++
 +    // webtool 补丁：不导航走（本地插件场景导航到外部 vault 会脱离代理/白屏），
 +    // 直接切换到对应云端环境
-+    this._environmentSubject.next(new CloudEnvironment(chosenRegionConfig));
-+    await super.setEnvironment(chosenRegionConfig.key as Region);
-     return chosenRegionConfig.urls;
++    this._environmentSubject.next(new CloudEnvironment(effective));
++    await super.setEnvironment(effective.key as Region);
++    return effective.urls;
    }
  
+   getEnvironment$(userId: UserId): Observable<Environment> {
