@@ -10,12 +10,15 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +39,7 @@ type AssetService struct {
 	mu          sync.RWMutex
 	globalRules []intercept.Rule
 	mirrors     map[string]*mirror.Mirror
+	bridgeVer   string
 }
 
 func NewAssetService(mgr *plugin.Manager, rtr *router.Router, api *pluginapi.API) *AssetService {
@@ -139,7 +143,7 @@ func (s *AssetService) serveWeb(w http.ResponseWriter, r *http.Request, mf *mani
 	}
 
 	m := s.mirrorFor(mf, mode)
-	inject := func(b []byte) []byte { return injectBridge(b, mf.UpstreamHosts) }
+	inject := func(b []byte) []byte { return injectBridge(b, mf.UpstreamHosts, s.bridgeVersion()) }
 	m.ServeHTTP(w, r, sub, inject)
 }
 
@@ -190,7 +194,30 @@ var hashFileRe = regexp.MustCompile(`[.-][0-9a-fA-F]{8,}\.[a-zA-Z0-9]+$`)
 
 const bridgeScriptTag = `<script src="/host/bridge.js"></script>`
 
+// bridgeTag 返回带内容版本的桥脚本标签（ver 为空则退回无查询形式）。
+func bridgeTag(ver string) string {
+	if ver == "" {
+		return bridgeScriptTag
+	}
+	return `<script src="/host/bridge.js?v=` + ver + `"></script>`
+}
+
 var headOpenRe = regexp.MustCompile(`(?i)<head[^>]*>`)
+
+// SetBridgeVersion 设置桥脚本内容版本（bridge.js 的内容摘要），
+// 注入标签引用 ?v=<版本>，宿主升级后 URL 变化使 webview 旧缓存失效。
+func (s *AssetService) SetBridgeVersion(ver string) {
+	s.mu.Lock()
+	s.bridgeVer = ver
+	s.mu.Unlock()
+}
+
+// bridgeVersion 读取当前桥脚本版本（未设置为空串）。
+func (s *AssetService) bridgeVersion() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.bridgeVer
+}
 
 // corsHeaders 为插件资源响应设置跨域放行头。
 func corsHeaders(w http.ResponseWriter) {
@@ -200,13 +227,129 @@ func corsHeaders(w http.ResponseWriter) {
 	h.Set("Access-Control-Allow-Headers", "Content-Type")
 }
 
-// upstreamClient 代理转发专用：60s 超时；不跟随重定向，
+// upstreamClient 代理转发专用：60s 总超时；不跟随重定向，
 // 3xx 与 Location 原样透传给插件自行处理。
+// 代理探测链：环境变量（HTTPS_PROXY 等）→ 桌面系统代理（GNOME/KDE
+// manual 配置）→ 直连。自托管服务器常在境外，桌面浏览器走本地代理
+// 可达而 Go 直连 TLS 握手超时，跟随系统代理与浏览器行为对齐。
 var upstreamClient = &http.Client{
 	Timeout: 60 * time.Second,
 	CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		return http.ErrUseLastResponse
 	},
+	Transport: func() *http.Transport {
+		t := http.DefaultTransport.(*http.Transport).Clone()
+		t.Proxy = upstreamProxyFunc
+		t.TLSHandshakeTimeout = 15 * time.Second
+		return t
+	}(),
+}
+
+// upstreamProxyOnce 保证桌面系统代理只探测一次（exec gsettings/读配置有开销）。
+var (
+	upstreamProxyOnce sync.Once
+	upstreamDesktop   string
+)
+
+// upstreamProxyFunc 上游转发的代理决策：环境变量显式配置优先，
+// 其次进程启动后首次转发时探测到的桌面系统代理，均无则直连。
+func upstreamProxyFunc(req *http.Request) (*url.URL, error) {
+	if u, err := http.ProxyFromEnvironment(req); u != nil || err != nil {
+		return u, err
+	}
+	upstreamProxyOnce.Do(func() { upstreamDesktop = detectDesktopProxy() })
+	if upstreamDesktop != "" {
+		return url.Parse(upstreamDesktop)
+	}
+	return nil, nil
+}
+
+// detectDesktopProxy 探测桌面环境的手动代理配置，返回 http://host:port
+// 形式代理地址；未配置/探测失败返回空串（直连）。
+func detectDesktopProxy() string {
+	if p := gnomeProxy(); p != "" {
+		return p
+	}
+	return kdeProxy()
+}
+
+// gnomeProxy 读 GNOME gsettings 的 manual 代理（https 优先，缺失回落 http）。
+func gnomeProxy() string {
+	out, err := exec.Command("gsettings", "get", "org.gnome.system.proxy", "mode").Output()
+	if err != nil || strings.TrimSpace(string(out)) != "'manual'" {
+		return ""
+	}
+	for _, schema := range []string{"https", "http"} {
+		h, err1 := exec.Command("gsettings", "get", "org.gnome.system.proxy."+schema, "host").Output()
+		p, err2 := exec.Command("gsettings", "get", "org.gnome.system.proxy."+schema, "port").Output()
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		host := strings.Trim(strings.TrimSpace(string(h)), "'")
+		port := strings.TrimSpace(string(p))
+		if host == "" || port == "" || port == "0" {
+			continue
+		}
+		if n, err := strconv.Atoi(port); err == nil && n > 0 && n < 65536 {
+			return "http://" + net.JoinHostPort(host, port)
+		}
+	}
+	return ""
+}
+
+// kdeProxy 读 ~/.config/kioslaverc [Proxy Settings]（ProxyType=1 为手动）。
+// 代理值兼容两种格式：http://host:port 与老式 "host port" 空格分隔。
+func kdeProxy() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".config", "kioslaverc"))
+	if err != nil {
+		return ""
+	}
+	return parseKdeProxy(string(data))
+}
+
+// parseKdeProxy 从 kioslaverc 内容提取手动代理（httpsProxy 优先，回落 httpProxy）。
+func parseKdeProxy(content string) string {
+	var proxyType int
+	vals := map[string]string{}
+	inSection := false
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]"):
+			inSection = line == "[Proxy Settings]"
+		case inSection && strings.Contains(line, "="):
+			k, v, _ := strings.Cut(line, "=")
+			k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+			if k == "ProxyType" {
+				proxyType, _ = strconv.Atoi(v)
+			}
+			vals[k] = v
+		}
+	}
+	if proxyType != 1 {
+		return ""
+	}
+	for _, key := range []string{"httpsProxy", "httpProxy"} {
+		v := strings.TrimSpace(strings.SplitN(vals[key], ",", 2)[0]) // 可能配多行，取第一个
+		if v == "" {
+			continue
+		}
+		if strings.Contains(v, "://") {
+			return v
+		}
+		// 老式 "host port" 空格分隔
+		fields := strings.Fields(v)
+		if len(fields) == 2 {
+			if n, err := strconv.Atoi(fields[1]); err == nil && n > 0 && n < 65536 {
+				return "http://" + net.JoinHostPort(fields[0], fields[1])
+			}
+		}
+	}
+	return ""
 }
 
 // upstreamAllowHeaders 允许透传给上游的请求头白名单。
@@ -324,7 +467,9 @@ func matchUpstreamHost(patterns []string, host string) bool {
 // injectBridge 把宿主桥脚本注入插件 HTML（幂等）。
 // upstreamHosts 非空时额外在桥脚本之前注入 __WT_UPSTREAM_HOSTS__ 变量，
 // 供 bridge.js 的 fetch/XHR 包装把白名单上游请求改写到代理端点。
-func injectBridge(html []byte, upstreamHosts []string) []byte {
+// ver 非空时桥脚本以 ?v=<ver> 引用（bridge.js 内容摘要）：/host/ 静态服务
+// 无缓存控制头，宿主升级后若 URL 不变，webview 会继续用缓存的旧桥脚本。
+func injectBridge(html []byte, upstreamHosts []string, ver string) []byte {
 	upstreamTag := ""
 	if len(upstreamHosts) > 0 && !bytes.Contains(html, []byte("__WT_UPSTREAM_HOSTS__")) {
 		if b, err := json.Marshal(upstreamHosts); err == nil {
@@ -344,7 +489,7 @@ func injectBridge(html []byte, upstreamHosts []string) []byte {
 			return out.Bytes()
 		}
 	}
-	inject := upstreamTag + bridgeScriptTag
+	inject := upstreamTag + bridgeTag(ver)
 	if loc := headOpenRe.FindIndex(html); loc != nil {
 		var out bytes.Buffer
 		out.Write(html[:loc[1]])
@@ -438,7 +583,7 @@ func (s *AssetService) serveBundle(w http.ResponseWriter, r *http.Request, mf *m
 			http.Error(w, "read error: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		b = injectBridge(b, mf.UpstreamHosts)
+		b = injectBridge(b, mf.UpstreamHosts, s.bridgeVersion())
 		w.Header().Set("Content-Type", mimeOverrides[".html"])
 		w.Header().Set("Cache-Control", "no-cache")
 		w.WriteHeader(http.StatusOK)

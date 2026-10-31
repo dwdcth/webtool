@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -33,6 +35,12 @@ func main() {
 	rtr := router.New()
 	api := pluginapi.New(mgr)
 	assetSvc := server.NewAssetService(mgr, rtr, api)
+	// 桥脚本版本化：内容摘要进注入标签的 ?v= 查询，
+	// 避免 webview 在升级后继续使用缓存的旧 bridge.js
+	if b, err := fs.ReadFile(assets, "frontend/dist/host/bridge.js"); err == nil {
+		sum := sha256.Sum256(b)
+		assetSvc.SetBridgeVersion(hex.EncodeToString(sum[:4]))
+	}
 	rulesPath := filepath.Join(paths.DataDir(), "rules.json")
 	assetSvc.SetGlobalRules(server.LoadOrCreateGlobalRules(rulesPath))
 	hostSvc := hostservice.NewPluginService(mgr, rtr, assetSvc, rulesPath)

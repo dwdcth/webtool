@@ -37,6 +37,43 @@ func TestMatchUpstreamHost(t *testing.T) {
 	}
 }
 
+func TestParseKdeProxy(t *testing.T) {
+	cases := []struct {
+		name, content, want string
+	}{
+		{
+			name:  "手动 https 优先",
+			want:  "http://127.0.0.1:7897",
+			content: "[Proxy Settings]\nProxyType=1\nhttpProxy=http://127.0.0.1 7890\nhttpsProxy=http://127.0.0.1:7897\n",
+		},
+		{
+			name:  "手动老式空格分隔",
+			want:  "http://127.0.0.1:7890",
+			content: "[Proxy Settings]\nProxyType=1\nhttpProxy=127.0.0.1 7890\n",
+		},
+		{
+			name:  "非手动类型忽略",
+			want:  "",
+			content: "[Proxy Settings]\nProxyType=0\nhttpsProxy=http://127.0.0.1:7897\n",
+		},
+		{
+			name:  "无配置节忽略",
+			want:  "",
+			content: "[Other]\nProxyType=1\nhttpsProxy=http://127.0.0.1:7897\n",
+		},
+		{
+			name:  "非法端口忽略",
+			want:  "",
+			content: "[Proxy Settings]\nProxyType=1\nhttpsProxy=127.0.0.1 abc\n",
+		},
+	}
+	for _, c := range cases {
+		if got := parseKdeProxy(c.content); got != c.want {
+			t.Errorf("%s: got %q want %q", c.name, got, c.want)
+		}
+	}
+}
+
 // doUpstreamReq 模拟 StripPrefix 后的插件请求（支持方法/query/body/头）。
 func doUpstreamReq(svc *AssetService, method, strippedTarget string, body io.Reader, headers map[string]string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, "/p"+strippedTarget, body)
@@ -158,5 +195,21 @@ func TestNoUpstreamInjectWithoutHosts(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), `<script src="/host/bridge.js"></script>`) {
 		t.Fatal("桥脚本注入被破坏")
+	}
+}
+
+func TestInjectBridgeVersion(t *testing.T) {
+	html := []byte(`<html><head><title>x</title></head><body></body></html>`)
+	// 无版本：退回无查询标签
+	if out := string(injectBridge(html, nil, "")); !strings.Contains(out, `<script src="/host/bridge.js"></script>`) {
+		t.Fatalf("空版本应使用无查询标签: %s", out)
+	}
+	// 带版本：标签含 ?v=，upstream 变量仍在桥脚本之前
+	out := string(injectBridge(html, []string{"*.bitwarden.com"}, "abcd1234"))
+	if !strings.Contains(out, `<script src="/host/bridge.js?v=abcd1234"></script>`) {
+		t.Fatalf("版本未进标签: %s", out)
+	}
+	if up, br := strings.Index(out, "__WT_UPSTREAM_HOSTS__"), strings.Index(out, "/host/bridge.js"); up == -1 || br == -1 || up > br {
+		t.Fatalf("upstream 变量应先于桥脚本: up=%d bridge=%d", up, br)
 	}
 }

@@ -4,6 +4,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
@@ -52,6 +54,11 @@ func main() {
 	rtr := router.New()
 	api := pluginapi.New(mgr)
 	svc := server.NewAssetService(mgr, rtr, api)
+	// 桥脚本版本化（与真实应用一致，防 webview 旧缓存）
+	if b, err := os.ReadFile("frontend/public/host/bridge.js"); err == nil {
+		sum := sha256.Sum256(b)
+		svc.SetBridgeVersion(hex.EncodeToString(sum[:4]))
+	}
 	svc.SetGlobalRules(server.LoadOrCreateGlobalRules(filepath.Join(paths.DataDir(), "rules.json")))
 
 	mux := http.NewServeMux()

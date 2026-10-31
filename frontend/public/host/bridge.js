@@ -28,6 +28,28 @@
     } catch (e) { /* 忽略 */ }
   });
 
+  // 外站链接拦截：插件页内点击指向外站的 <a>（如 Bitwarden 区域菜单的
+  // 官方 vault 链接）会让 iframe 整页导航走，被对方 X-Frame-Options 拒绝
+  // 后白屏。捕获阶段拦截默认导航，交给宿主在系统浏览器打开。
+  // 注：preventDefault 不影响页面自身的 click 处理（如"自托管…"菜单项）。
+  document.addEventListener('click', function (e) {
+    try {
+      if (e.defaultPrevented || e.button !== 0) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+      if (!a) return;
+      var href = a.getAttribute('href') || '';
+      if (!href || href.charAt(0) === '#' || href.indexOf('javascript:') === 0) return;
+      var abs = new URL(href, location.href);
+      if (abs.origin === location.origin) return;
+      if (abs.protocol !== 'http:' && abs.protocol !== 'https:') return;
+      e.preventDefault();
+      if (window.unihub && window.unihub.system && window.unihub.system.openExternal) {
+        window.unihub.system.openExternal(abs.href).catch(function () { /* 打开失败静默 */ });
+      }
+    } catch (err) { /* 拦截异常不影响页面 */ }
+  }, true);
+
   if (window.__WEBTOOL_BRIDGE__) return;
   var m = location.pathname.match(/^\/p\/([0-9a-f]{16,64})\//);
   if (!m) return; // 不在插件资源空间内则不安装
