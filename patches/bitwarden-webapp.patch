@@ -15,7 +15,7 @@ index 8678f5a..8face32 100644
    <div bitTypography="body2">
      {{ "accessing" | i18n }}:
 diff --git a/apps/web/src/app/components/environment-selector/environment-selector.component.ts b/apps/web/src/app/components/environment-selector/environment-selector.component.ts
-index 84a19f6..47d7d6b 100644
+index 84a19f6..d0fcd7d 100644
 --- a/apps/web/src/app/components/environment-selector/environment-selector.component.ts
 +++ b/apps/web/src/app/components/environment-selector/environment-selector.component.ts
 @@ -2,15 +2,20 @@
@@ -65,7 +65,7 @@ index 84a19f6..47d7d6b 100644
    protected availableRegions$: Observable<RegionConfig[]> =
      this.availableRegionsService.availableRegions$;
    protected currentRegion?: RegionConfig;
-@@ -40,9 +62,29 @@ export class EnvironmentSelectorComponent implements OnInit {
+@@ -40,9 +62,34 @@ export class EnvironmentSelectorComponent implements OnInit {
      this.showRegionSelector = !this.platformUtilsService.isSelfHost();
      this.routeAndParams = `/#${this.router.url}`;
  
@@ -73,8 +73,9 @@ index 84a19f6..47d7d6b 100644
 -    this.currentRegion = this.environmentService
 -      .availableRegions()
 -      .find((r) => Utils.getHost(r.urls.webVault) === host);
-+    // webtool 补丁：响应式显示当前环境。自托管时展示服务器主机名，
-+    // 云端区域按 window.location 主机名匹配（本地插件托管时匹配不上则空白）
++    // webtool 补丁：响应式显示当前环境。自托管时展示服务器主机名；
++    // 云端区域优先按 window.location 主机名匹配，本地插件托管匹配不上
++    // 时退回当前环境所属区域（默认环境为官方云，而非 origin）
 +    this.environmentService.environment$
 +      .pipe(takeUntil(this.destroy$ ?? new Subject()))
 +      .subscribe((env) => {
@@ -86,9 +87,13 @@ index 84a19f6..47d7d6b 100644
 +          } as RegionConfig;
 +        } else {
 +          const host = Utils.getHost(window.location.href);
-+          this.currentRegion = this.environmentService
-+            .availableRegions()
-+            .find((r) => Utils.getHost(r.urls.webVault) === host);
++          this.currentRegion =
++            this.environmentService
++              .availableRegions()
++              .find((r) => Utils.getHost(r.urls.webVault) === host) ??
++            this.environmentService
++              .availableRegions()
++              .find((r) => env != null && r.key === env.getRegion());
 +        }
 +      });
 +  }
@@ -100,11 +105,26 @@ index 84a19f6..47d7d6b 100644
    }
  }
 diff --git a/apps/web/src/app/platform/web-environment.service.ts b/apps/web/src/app/platform/web-environment.service.ts
-index a9b9aa1..647069a 100644
+index a9b9aa1..febf2b8 100644
 --- a/apps/web/src/app/platform/web-environment.service.ts
 +++ b/apps/web/src/app/platform/web-environment.service.ts
-@@ -63,18 +63,39 @@ export class WebEnvironmentService extends DefaultEnvironmentService {
+@@ -59,22 +59,68 @@ export class WebEnvironmentService extends DefaultEnvironmentService {
+       // doesn't need a special-case patch. Build-pipeline-provided values take priority.
+       envUrls.send = envUrls.send ?? region.urls.send;
+       environment = new WebCloudEnvironment(region, envUrls);
+-    } else {
++    } else if (this.win.location.origin.startsWith("https://")) {
        environment = new SelfHostedEnvironment(envUrls);
++    } else {
++      // webtool 补丁：本地插件托管（wails:// 等非 https origin）。Bitwarden
++      // 客户端硬校验所有 API/SignalR URL 必须 https:// 开头（否则抛
++      // InsecureUrlError，登录等一切 API 调用失败），origin 不能当基址。
++      // 默认切官方云区域（请求经宿主代理），用户可通过对话框切自托管。
++      // 注意用 CloudEnvironment 而非 WebCloudEnvironment：后者会把 origin
++      // 混入 urls，getApiUrl 仍指向 origin。
++      const fallback =
++        availableRegions.find((r) => r.key === Region.US) ?? availableRegions[0];
++      environment = new CloudEnvironment(fallback);
      }
  
 +    // webtool 补丁：先捕获父类基于持久化状态构建的环境流（下面会覆盖 globalEnvironment$）
@@ -117,16 +137,31 @@ index a9b9aa1..647069a 100644
      this.environment$ = subject.asObservable();
      this.globalEnvironment$ = subject.asObservable();
 +
-+    // webtool 补丁：启动时恢复已保存的自托管环境（覆盖按主机名推导的结果）
-+    firstValueFrom(persistedGlobalEnv$)
-+      .then((env) => {
-+        if (env != null && env.getRegion() === Region.SelfHosted) {
-+          this._environmentSubject.next(new SelfHostedEnvironment(env.getUrls()));
++    // webtool 补丁：恢复已保存的环境。不能只取流的第一个值——持久化
++    // 状态异步加载，首值往往是按主机名推导的默认环境；订阅整个流，
++    // 出现合法的持久化环境（自托管须带 https 基址）才恢复并结束订阅。
++    // 本地插件托管时 hostname 永远匹配不上官方域，用户上次选择的区域
++    // 只存在于持久化状态里，必须在这里恢复。
++    const restoreSub = persistedGlobalEnv$.subscribe((env) => {
++      if (env == null) {
++        return;
++      }
++      if (env.getRegion() === Region.SelfHosted) {
++        const urls = env.getUrls();
++        const base = urls.base ?? urls.webVault ?? "";
++        if (!base.startsWith("https://")) {
++          return;
 +        }
-+      })
-+      .catch(() => {
-+        /* 状态读取失败保持默认环境 */
-+      });
++        this._environmentSubject.next(new SelfHostedEnvironment(urls));
++        restoreSub.unsubscribe();
++        return;
++      }
++      const cfg = this.availableRegions().find((r) => r.key === env.getRegion());
++      if (cfg != null) {
++        this._environmentSubject.next(new CloudEnvironment(cfg));
++        restoreSub.unsubscribe();
++      }
++    });
    }
  
    // Web setting env means navigating to a new location
@@ -144,7 +179,7 @@ index a9b9aa1..647069a 100644
      }
  
      // Find the region
-@@ -101,11 +122,10 @@ export class WebEnvironmentService extends DefaultEnvironmentService {
+@@ -101,11 +147,10 @@ export class WebEnvironmentService extends DefaultEnvironmentService {
        throw new Error("The selected region is not known as an available region.");
      }
  
