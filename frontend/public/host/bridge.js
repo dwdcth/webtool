@@ -244,14 +244,40 @@
         return null;
       };
 
-      // fetch 包装：仅改写字符串 / URL 对象形式的地址，
-      // Request 对象等其余形态原样放行
+      // fetch 包装：改写字符串 / URL 对象 / Request 对象三种形式的地址。
+      // Request 对象（Bitwarden ApiService 是 fetch(new Request(...))，全部
+      // API 调用都是该形式）不能以 new Request(代理URL, 原Request) 重建：
+      // 构造成功但 Chromium/WebKit 一律发送失败（实测 TypeError），需
+      // clone() 读出 body 再以 init 形式重发（Blob 保二进制安全），
+      // 否则跨域请求绕过代理直连上游被 CORS 拦截（Load failed）
       var nativeFetch = window.fetch.bind(window);
       window.fetch = function (input, init) {
         try {
+          var proxied = null;
           if (typeof input === 'string' || input instanceof URL) {
-            var proxied = upstreamProxyUrl(input);
+            proxied = upstreamProxyUrl(String(input));
             if (proxied) return nativeFetch(proxied, init);
+          } else if (input instanceof Request) {
+            proxied = upstreamProxyUrl(input.url);
+            if (proxied) {
+              var req = input;
+              var hasBody = req.method !== 'GET' && req.method !== 'HEAD';
+              var bodyReady = hasBody
+                ? req.clone().blob()
+                : Promise.resolve(undefined);
+              return bodyReady.then(function (body) {
+                return nativeFetch(proxied, {
+                  method: req.method,
+                  headers: req.headers,
+                  body: body,
+                  credentials: req.credentials,
+                  cache: req.cache,
+                  redirect: req.redirect,
+                  integrity: req.integrity,
+                  signal: (init && init.signal) || req.signal,
+                });
+              });
+            }
           }
         } catch (e) { /* 解析失败按原样走原生 */ }
         return nativeFetch(input, init);
