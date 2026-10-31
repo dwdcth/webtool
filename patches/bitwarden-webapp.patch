@@ -110,6 +110,23 @@ index 84a19f6..41f2ebc 100644
 +    this.destroy$.complete();
    }
  }
+diff --git a/apps/web/src/app/core/core.module.ts b/apps/web/src/app/core/core.module.ts
+index b3f689a..f366518 100644
+--- a/apps/web/src/app/core/core.module.ts
++++ b/apps/web/src/app/core/core.module.ts
+@@ -301,7 +301,11 @@ const safeProviders: SafeProvider[] = [
+   }),
+   safeProvider({
+     provide: OBSERVABLE_DISK_STORAGE,
+-    useFactory: () => new WindowStorageService(window.sessionStorage),
++    // webtool 补丁：官方 web 的 disk 存储是 sessionStorage（隐私优先，
++    // 关窗即清；官方部署下环境由域名决定，无需跨会话）。本地插件托管
++    // 是单用户桌面场景，环境选择等状态必须跨启动持久，改用 localStorage
++    // （敏感数据本就经主密码派生密钥加密，官方桌面端同样持久落盘）。
++    useFactory: () => new WindowStorageService(window.localStorage),
+     deps: [],
+   }),
+   safeProvider({
 diff --git a/apps/web/src/app/platform/web-environment.service.ts b/apps/web/src/app/platform/web-environment.service.ts
 index a9b9aa1..0039b49 100644
 --- a/apps/web/src/app/platform/web-environment.service.ts
