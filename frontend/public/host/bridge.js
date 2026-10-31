@@ -232,6 +232,9 @@
       // 未命中或非 http(s) 返回 null（走原生）
       var upstreamProxyUrl = function (input) {
         var abs = new URL(String(input), location.href);
+        // 同源请求不走代理（本地资源：locales/assets/lazy chunks），
+        // 否则 wails:// 等自定义 scheme 会被 Go 代理拒收导致白屏
+        if (abs.origin === location.origin) return null;
         if (abs.protocol !== 'http:' && abs.protocol !== 'https:') return null;
         for (var i = 0; i < upstreamHosts.length; i++) {
           if (matchUpstreamHost(upstreamHosts[i], abs.hostname)) {
