@@ -99,7 +99,8 @@ async function openPlugin(p: PluginInfo) {
     const exist = tabs.value.find((t) => t.key === p.id)
     const icon = iconMap.value[p.id] ?? (await resolveIcon(p))
     if (exist) {
-      exist.src = src
+      // 已存在（含隐藏）：直接切回，不重新加载 src（保留 iframe 内存状态）
+      exist.hidden = false
     } else {
       tabs.value.push({
         key: p.id,
@@ -117,18 +118,34 @@ async function openPlugin(p: PluginInfo) {
 }
 
 function closeTab(key: string) {
+  const tab = tabs.value.find((t) => t.key === key)
+  if (!tab) return
+  // 标记隐藏而非销毁：iframe 保持存活，插件内存状态（如 Bitwarden 解锁态）不丢失。
+  // 再次从侧边栏打开时直接切回，无需重新加载。
+  tab.hidden = true
+  if (activeKey.value === key) {
+    const visible = tabs.value.filter((t) => !t.hidden)
+    const idx = tabs.value.indexOf(tab)
+    activeKey.value =
+      visible[idx - 1]?.key ?? visible[idx]?.key ?? visible[0]?.key ?? 'home'
+  }
+}
+
+// destroyTab：真正从 DOM 移除（卸载插件 / 停用时调用）
+function destroyTab(key: string) {
   const idx = tabs.value.findIndex((t) => t.key === key)
   if (idx < 0) return
   tabs.value.splice(idx, 1)
   if (activeKey.value === key) {
-    activeKey.value = tabs.value[idx - 1]?.key ?? tabs.value[0]?.key ?? 'home'
+    const visible = tabs.value.filter((t) => !t.hidden)
+    activeKey.value = visible[idx - 1]?.key ?? visible[0]?.key ?? 'home'
   }
 }
 
 async function toggleEnabled(p: PluginInfo) {
   try {
     await PluginService.SetPluginEnabled(p.id, !p.enabled)
-    if (p.enabled) closeTab(p.id) // 停用时关闭其标签
+    if (p.enabled) destroyTab(p.id) // 停用时真正销毁标签
     await refresh()
   } catch (e) {
     toast('err', `${p.enabled ? '停用' : '启用'}失败: ${e}`)
@@ -139,7 +156,7 @@ async function uninstall(p: PluginInfo) {
   if (!window.confirm(`确定卸载插件「${p.name}」？其本地数据也会被删除。`)) return
   try {
     await PluginService.UninstallPlugin(p.id, true)
-    closeTab(p.id)
+    destroyTab(p.id)
     toast('ok', `已卸载 ${p.name}`)
     await refresh()
   } catch (e) {
@@ -197,8 +214,8 @@ async function pinPlugin(p: PluginInfo) {
     await PluginService.SetPluginMode(p.id, next)
     toast('ok', next === 'offline' ? `已固化 ${p.name}（离线可用）` : `${p.name} 已回到录制模式`)
     await refresh()
-    // 重开标签让新模式立即呈现
-    closeTab(p.id)
+    // 重开标签让新模式立即呈现（需真正重载，故用 destroyTab）
+    destroyTab(p.id)
     const updated = plugins.value.find((x) => x.id === p.id)
     if (updated) await openPlugin(updated)
   } catch (e) {
@@ -215,6 +232,8 @@ async function onMarketInstalled(info: PluginInfo) {
 }
 
 const activeTab = computed(() => tabs.value.find((t) => t.key === activeKey.value))
+// 标签栏只显示未隐藏的标签
+const visibleTabs = computed(() => tabs.value.filter((t) => !t.hidden))
 
 onMounted(refresh)
 </script>
@@ -241,7 +260,7 @@ onMounted(refresh)
 
     <div class="flex min-w-0 flex-1 flex-col">
       <TabBar
-        :tabs="tabs"
+        :tabs="visibleTabs"
         :active-key="activeKey"
         @select="(k: string) => (activeKey = k)"
         @close="closeTab"

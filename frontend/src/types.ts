@@ -28,6 +28,7 @@ export interface Tab {
   iconEmoji?: string
   iconUrl?: string
   sandbox?: boolean // manifest 声明 webtool.sandbox=true 时启用严格沙箱
+  hidden?: boolean // "关闭"标签：隐藏于标签栏但 iframe 保持存活（防止插件丢失内存状态）
 }
 
 export interface Toast {
